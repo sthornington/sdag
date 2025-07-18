@@ -1,5 +1,5 @@
 mod engine;
-use engine::{build_node, SamplerCore, InputNodeImpl, ConstNode, AddNode, MulNode, DivNode};
+use engine::{SamplerCore, InputNodeImpl, ConstNode, AddNode, MulNode, DivNode, NodeDef};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
@@ -23,6 +23,7 @@ fn sdag(py: Python, m: &PyModule) -> PyResult<()> {
 /// Python InputNode wrapper.
 #[pyclass(name = "InputNode")]
 struct InputNode {
+    #[pyo3(get)]
     name: String,
 }
 #[pymethods]
@@ -31,27 +32,20 @@ impl InputNode {
     fn new(name: String) -> Self {
         InputNode { name }
     }
+    /// Tag of this node type in the YAML spec
+    #[classattr]
+    const TYPE: &'static str = InputNodeImpl::TYPE;
+    #[classattr]
+    const FIELDS: [&'static str; 1] = ["name"];
+    #[classattr]
+    const SEQ_FIELDS: [&'static str; 0] = [];
 }
 
-//impl PyNodeDef for InputNode {
-//    const TYPE: &'static str = InputNodeImpl::TYPE;
-//    fn to_spec(&self, _py: Python) -> PyResult<Value> {
-//        let mut m = Mapping::new();
-//        m.insert(Value::String("type".into()), Value::String(Self::TYPE.into()));
-//        m.insert(Value::String("name".into()), Value::String(self.name.clone()));
-//        Ok(Value::Mapping(m))
-//    }
-//}
-
-/// Trait linking Python wrapper to its engine definition and YAML spec.
-trait PyNodeDef {
-    const TYPE: &'static str;
-    fn to_spec(&self, py: Python) -> PyResult<Value>;
-}
 
 /// Python Const wrapper.
 #[pyclass(name = "Const")]
 struct Const {
+    #[pyo3(get)]
     value: f64,
 }
 #[pymethods]
@@ -60,24 +54,19 @@ impl Const {
     fn new(value: f64) -> Self {
         Const { value }
     }
+    #[classattr]
+    const TYPE: &'static str = ConstNode::TYPE;
+    #[classattr]
+    const FIELDS: [&'static str; 1] = ["value"];
+    #[classattr]
+    const SEQ_FIELDS: [&'static str; 0] = [];
 }
 
-//impl PyNodeDef for Const {
-//    const TYPE: &'static str = ConstNode::TYPE;
-//    fn to_spec(&self, _py: Python) -> PyResult<Value> {
-//        let mut m = Mapping::new();
-//        m.insert(Value::String("type".into()), Value::String(Self::TYPE.into()));
-//        m.insert(
-//            Value::String("value".into()),
-//            serde_yaml::to_value(self.value).map_err(|e| PyValueError::new_err(e.to_string()))?,
-//        );
-//        Ok(Value::Mapping(m))
-//    }
-//}
 
 /// Python Add wrapper.
 #[pyclass(name = "Add")]
 struct Add {
+    #[pyo3(get)]
     children: Vec<PyObject>,
 }
 #[pymethods]
@@ -86,26 +75,19 @@ impl Add {
     fn new(children: Vec<PyObject>) -> Self {
         Add { children }
     }
+    #[classattr]
+    const TYPE: &'static str = AddNode::TYPE;
+    #[classattr]
+    const FIELDS: [&'static str; 1] = ["children"];
+    #[classattr]
+    const SEQ_FIELDS: [&'static str; 1] = ["children"];
 }
 
-//impl PyNodeDef for Add {
-//    const TYPE: &'static str = AddNode::TYPE;
-//    fn to_spec(&self, py: Python) -> PyResult<Value> {
-//        let mut m = Mapping::new();
-//        m.insert(Value::String("type".into()), Value::String(Self::TYPE.into()));
-//        let mut seq = Vec::with_capacity(self.children.len());
-//        for child in &self.children {
-//            let spec = child.as_ref(py).extract::<PyRef<dyn PyNodeDef>>()?.to_spec(py)?;
-//            seq.push(spec);
-//        }
-//        m.insert(Value::String("children".into()), Value::Sequence(seq));
-//        Ok(Value::Mapping(m))
-//    }
-//}
 
 /// Python Mul wrapper.
 #[pyclass(name = "Mul")]
 struct Mul {
+    #[pyo3(get)]
     children: Vec<PyObject>,
 }
 #[pymethods]
@@ -114,27 +96,21 @@ impl Mul {
     fn new(children: Vec<PyObject>) -> Self {
         Mul { children }
     }
+    #[classattr]
+    const TYPE: &'static str = MulNode::TYPE;
+    #[classattr]
+    const FIELDS: [&'static str; 1] = ["children"];
+    #[classattr]
+    const SEQ_FIELDS: [&'static str; 1] = ["children"];
 }
 
-//impl PyNodeDef for Mul {
-//    const TYPE: &'static str = MulNode::TYPE;
-//    fn to_spec(&self, py: Python) -> PyResult<Value> {
-//        let mut m = Mapping::new();
-//        m.insert(Value::String("type".into()), Value::String(Self::TYPE.into()));
-//        let mut seq = Vec::with_capacity(self.children.len());
-//        for child in &self.children {
-//            let spec = child.as_ref(py).extract::<PyRef<dyn PyNodeDef>>()?.to_spec(py)?;
-//            seq.push(spec);
-//        }
-//        m.insert(Value::String("children".into()), Value::Sequence(seq));
-//        Ok(Value::Mapping(m))
-//    }
-//}
 
 /// Python Div wrapper.
 #[pyclass(name = "Div")]
 struct Div {
+    #[pyo3(get)]
     left: PyObject,
+    #[pyo3(get)]
     right: PyObject,
 }
 #[pymethods]
@@ -143,20 +119,14 @@ impl Div {
     fn new(left: PyObject, right: PyObject) -> Self {
         Div { left, right }
     }
+    #[classattr]
+    const TYPE: &'static str = DivNode::TYPE;
+    #[classattr]
+    const FIELDS: [&'static str; 2] = ["left", "right"];
+    #[classattr]
+    const SEQ_FIELDS: [&'static str; 0] = [];
 }
 
-//impl PyNodeDef for Div {
-//    const TYPE: &'static str = DivNode::TYPE;
-//    fn to_spec(&self, py: Python) -> PyResult<Value> {
-//        let mut m = Mapping::new();
-//        m.insert(Value::String("type".into()), Value::String(Self::TYPE.into()));
-//        let l = self.left.as_ref(py).extract::<PyRef<dyn PyNodeDef>>()?.to_spec(py)?;
-//        let r = self.right.as_ref(py).extract::<PyRef<dyn PyNodeDef>>()?.to_spec(py)?;
-//        m.insert(Value::String("left".into()), l);
-//        m.insert(Value::String("right".into()), r);
-//        Ok(Value::Mapping(m))
-//    }
-//}
 
 /// Python Graph (factory) wrapper.
 #[pyclass]
@@ -197,59 +167,48 @@ impl Sampler {
 /// Freeze a node to a YAML description.
 #[pyfunction]
 fn freeze(obj: &PyAny) -> PyResult<String> {
-    // recurse through Python node wrappers and build serde_yaml::Value
+    // Build a serde_yaml::Value spec for any PyNode wrapper based on its TYPE, FIELDS, and SEQ_FIELDS
     let py = obj.py();
     fn freeze_val(obj: &PyAny, py: Python) -> PyResult<Value> {
-        use serde_yaml::Mapping;
-        if let Ok(inp) = obj.extract::<PyRef<InputNode>>() {
-            let mut m = Mapping::new();
-            m.insert(Value::String("type".into()), Value::String("input".into()));
-            m.insert(
-                Value::String("name".into()),
-                Value::String(inp.name.clone()),
-            );
-            return Ok(Value::Mapping(m));
-        }
-        if let Ok(c) = obj.extract::<PyRef<Const>>() {
-            let mut m = Mapping::new();
-            m.insert(Value::String("type".into()), Value::String("const".into()));
-            let v_num =
-                serde_yaml::to_value(c.value).map_err(|e| PyValueError::new_err(e.to_string()))?;
-            m.insert(Value::String("value".into()), v_num);
-            return Ok(Value::Mapping(m));
-        }
-        if let Ok(a) = obj.extract::<PyRef<Add>>() {
-            let mut m = Mapping::new();
-            m.insert(Value::String("type".into()), Value::String("add".into()));
-            let mut seq = Vec::new();
-            for child in &a.children {
-                let val = freeze_val(child.as_ref(py), py)?;
-                seq.push(val);
+        let cls = obj.get_type();
+        // tag name
+        let tag: &str = cls.getattr("TYPE")?.extract()?;
+        // field names and which are sequences
+        let fields: Vec<String> = cls.getattr("FIELDS")?.extract()?;
+        let seq_fields: Vec<String> = cls.getattr("SEQ_FIELDS")?.extract()?;
+        let mut m = Mapping::new();
+        m.insert(Value::String("type".into()), Value::String(tag.into()));
+        for field in fields {
+            let attr = obj.getattr(field.as_str())?;
+            if seq_fields.contains(&field) {
+                let list: Vec<PyObject> = attr.extract()?;
+                let mut seq = Vec::with_capacity(list.len());
+                for elt in list {
+                    seq.push(freeze_val(elt.as_ref(py), py)?);
+                }
+                m.insert(Value::String(field.clone()), Value::Sequence(seq));
+            } else if attr.get_type().getattr("TYPE").is_ok() {
+                // nested node wrapper
+                let nested = freeze_val(attr, py)?;
+                m.insert(Value::String(field.clone()), nested);
+            } else {
+                // scalar value
+                if let Ok(x) = attr.extract::<f64>() {
+                    let v = serde_yaml::to_value(x)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                    m.insert(Value::String(field.clone()), v);
+                } else if let Ok(s) = attr.extract::<String>() {
+                    let v = serde_yaml::to_value(s)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                    m.insert(Value::String(field.clone()), v);
+                } else {
+                    return Err(PyValueError::new_err(
+                        format!("Unsupported field '{}' for freeze", field)
+                    ));
+                }
             }
-            m.insert(Value::String("children".into()), Value::Sequence(seq));
-            return Ok(Value::Mapping(m));
         }
-        if let Ok(a) = obj.extract::<PyRef<Mul>>() {
-            let mut m = Mapping::new();
-            m.insert(Value::String("type".into()), Value::String("mul".into()));
-            let mut seq = Vec::new();
-            for child in &a.children {
-                let val = freeze_val(child.as_ref(py), py)?;
-                seq.push(val);
-            }
-            m.insert(Value::String("children".into()), Value::Sequence(seq));
-            return Ok(Value::Mapping(m));
-        }
-        if let Ok(a) = obj.extract::<PyRef<Div>>() {
-            let mut m = Mapping::new();
-            m.insert(Value::String("type".into()), Value::String("div".into()));
-            let l = freeze_val(a.left.as_ref(py), py)?;
-            let r = freeze_val(a.right.as_ref(py), py)?;
-            m.insert(Value::String("left".into()), l);
-            m.insert(Value::String("right".into()), r);
-            return Ok(Value::Mapping(m));
-        }
-        Err(PyValueError::new_err("Unsupported node type for freeze"))
+        Ok(Value::Mapping(m))
     }
     let v = freeze_val(obj, py)?;
     serde_yaml::to_string(&v).map_err(|e| PyValueError::new_err(e.to_string()))
