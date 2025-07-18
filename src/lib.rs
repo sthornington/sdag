@@ -1,5 +1,6 @@
 mod engine;
 use engine::{SamplerCore, InputNodeImpl, ConstNode, AddNode, MulNode, DivNode, NodeDef};
+use py_node_derive::{py_node, PyNode};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
@@ -22,91 +23,75 @@ fn sdag(py: Python, m: &PyModule) -> PyResult<()> {
 
 /// Python InputNode wrapper.
 #[pyclass(name = "InputNode")]
+#[derive(PyNode)]
 struct InputNode {
     #[pyo3(get)]
     name: String,
 }
 #[pymethods]
+#[py_node(InputNodeImpl)]
 impl InputNode {
     #[new]
     fn new(name: String) -> Self {
         InputNode { name }
     }
-    /// Tag of this node type in the YAML spec
-    #[classattr]
-    const TYPE: &'static str = InputNodeImpl::TYPE;
-    #[classattr]
-    const FIELDS: [&'static str; 1] = ["name"];
-    #[classattr]
-    const SEQ_FIELDS: [&'static str; 0] = [];
 }
 
 
 /// Python Const wrapper.
 #[pyclass(name = "Const")]
+#[derive(PyNode)]
 struct Const {
     #[pyo3(get)]
     value: f64,
 }
 #[pymethods]
+#[py_node(ConstNode)]
 impl Const {
     #[new]
     fn new(value: f64) -> Self {
         Const { value }
     }
-    #[classattr]
-    const TYPE: &'static str = ConstNode::TYPE;
-    #[classattr]
-    const FIELDS: [&'static str; 1] = ["value"];
-    #[classattr]
-    const SEQ_FIELDS: [&'static str; 0] = [];
 }
 
 
 /// Python Add wrapper.
 #[pyclass(name = "Add")]
+#[derive(PyNode)]
 struct Add {
     #[pyo3(get)]
     children: Vec<PyObject>,
 }
 #[pymethods]
+#[py_node(AddNode)]
 impl Add {
     #[new]
     fn new(children: Vec<PyObject>) -> Self {
         Add { children }
     }
-    #[classattr]
-    const TYPE: &'static str = AddNode::TYPE;
-    #[classattr]
-    const FIELDS: [&'static str; 1] = ["children"];
-    #[classattr]
-    const SEQ_FIELDS: [&'static str; 1] = ["children"];
 }
 
 
 /// Python Mul wrapper.
 #[pyclass(name = "Mul")]
+#[derive(PyNode)]
 struct Mul {
     #[pyo3(get)]
     children: Vec<PyObject>,
 }
 #[pymethods]
+#[py_node(MulNode)]
 impl Mul {
     #[new]
     fn new(children: Vec<PyObject>) -> Self {
         Mul { children }
     }
-    #[classattr]
-    const TYPE: &'static str = MulNode::TYPE;
-    #[classattr]
-    const FIELDS: [&'static str; 1] = ["children"];
-    #[classattr]
-    const SEQ_FIELDS: [&'static str; 1] = ["children"];
 }
 
 
 /// Python Div wrapper.
 #[pyclass(name = "Div")]
+#[derive(PyNode)]
 struct Div {
     #[pyo3(get)]
     left: PyObject,
@@ -114,17 +99,12 @@ struct Div {
     right: PyObject,
 }
 #[pymethods]
+#[py_node(DivNode)]
 impl Div {
     #[new]
     fn new(left: PyObject, right: PyObject) -> Self {
         Div { left, right }
     }
-    #[classattr]
-    const TYPE: &'static str = DivNode::TYPE;
-    #[classattr]
-    const FIELDS: [&'static str; 2] = ["left", "right"];
-    #[classattr]
-    const SEQ_FIELDS: [&'static str; 0] = [];
 }
 
 
