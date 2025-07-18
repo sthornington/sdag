@@ -118,15 +118,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "py_node_derive"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "pyo3"
 version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -221,7 +212,6 @@ name = "sdag"
 version = "0.1.0"
 dependencies = [
  "once_cell",
- "py_node_derive",
  "pyo3",
  "pyo3-build-config",
  "serde",

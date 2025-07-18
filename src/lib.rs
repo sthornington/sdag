@@ -1,10 +1,10 @@
 mod engine;
 use engine::{AddNode, ConstNode, DivNode, InputNodeImpl, MulNode, NodeDef, SamplerCore};
-use py_node_derive::{PyNode, py_node};
+//#[macro removed: py_node, PyNode derive]
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::wrap_pyfunction;
-use serde_yaml::{Mapping, Value};
+// use pyo3::wrap_pyfunction;
+// use serde_yaml::{Mapping, Value};
 use std::collections::HashMap;
 
 /// Python bindings and top-level module definitions.
@@ -17,106 +17,159 @@ fn sdag(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Div>()?;
     m.add_class::<Graph>()?;
     m.add_class::<Sampler>()?;
-    m.add_function(wrap_pyfunction!(freeze, m)?)?;
+    // m.add_function(wrap_pyfunction!(freeze, m)?)?; // freeze() moved to Phase 2
     Ok(())
 }
 
-/// Python InputNode wrapper.
+/// Python InputNode wrapper (ID node with scalar name).
 #[pyclass(name = "InputNode")]
-#[derive(PyNode)]
 struct InputNode {
+    #[pyo3(get)]
+    id: String,
     #[pyo3(get)]
     name: String,
 }
-#[py_node(InputNodeImpl)]
 #[pymethods]
 impl InputNode {
     #[new]
-    fn new(name: String) -> Self {
-        InputNode { name }
+    fn new(id: String, name: String) -> Self {
+        InputNode { id, name }
     }
 }
 
-/// Python Const wrapper.
+/// Python Const wrapper (ID node with scalar value).
 #[pyclass(name = "Const")]
-#[derive(PyNode)]
 struct Const {
+    #[pyo3(get)]
+    id: String,
     #[pyo3(get)]
     value: f64,
 }
-#[py_node(ConstNode)]
 #[pymethods]
 impl Const {
     #[new]
-    fn new(value: f64) -> Self {
-        Const { value }
+    fn new(id: String, value: f64) -> Self {
+        Const { id, value }
     }
 }
 
-/// Python Add wrapper.
+/// Python Add wrapper (ID node with upstream input IDs).
 #[pyclass(name = "Add")]
-#[derive(PyNode)]
 struct Add {
     #[pyo3(get)]
-    children: Vec<PyObject>,
+    id: String,
+    #[pyo3(get)]
+    inputs: Vec<String>,
 }
-#[py_node(AddNode)]
 #[pymethods]
 impl Add {
     #[new]
-    fn new(children: Vec<PyObject>) -> Self {
-        Add { children }
+    fn new(id: String, inputs: Vec<String>) -> Self {
+        Add { id, inputs }
     }
 }
 
-/// Python Mul wrapper.
+/// Python Mul wrapper (ID node with upstream input IDs).
 #[pyclass(name = "Mul")]
-#[derive(PyNode)]
 struct Mul {
     #[pyo3(get)]
-    children: Vec<PyObject>,
+    id: String,
+    #[pyo3(get)]
+    inputs: Vec<String>,
 }
-#[py_node(MulNode)]
 #[pymethods]
 impl Mul {
     #[new]
-    fn new(children: Vec<PyObject>) -> Self {
-        Mul { children }
+    fn new(id: String, inputs: Vec<String>) -> Self {
+        Mul { id, inputs }
     }
 }
 
-/// Python Div wrapper.
+/// Python Div wrapper (ID node with upstream input IDs).
 #[pyclass(name = "Div")]
-#[derive(PyNode)]
 struct Div {
     #[pyo3(get)]
-    left: PyObject,
+    id: String,
     #[pyo3(get)]
-    right: PyObject,
+    inputs: Vec<String>,
 }
-#[py_node(DivNode)]
 #[pymethods]
 impl Div {
     #[new]
-    fn new(left: PyObject, right: PyObject) -> Self {
-        Div { left, right }
+    fn new(id: String, inputs: Vec<String>) -> Self {
+        Div { id, inputs }
     }
 }
 
-/// Python Graph (factory) wrapper.
+/// Python Graph (factory) wrapper storing nodes by unique ID.
 #[pyclass]
-struct Graph;
+struct Graph {
+    counter: usize,
+    registry: HashMap<String, PyObject>,
+}
 #[pymethods]
 impl Graph {
     #[new]
     fn new() -> Self {
-        Graph
+        Graph {
+            counter: 0,
+            registry: HashMap::new(),
+        }
     }
-    fn add(&self, children: Vec<PyObject>) -> Add {
-        Add { children }
+    /// Create an InputNode, register it, and return its ID.
+    fn input(&mut self, py: Python, name: String) -> String {
+        let id = format!("n{}", self.counter);
+        self.counter += 1;
+        let node = InputNode {
+            id: id.clone(),
+            name,
+        };
+        self.registry.insert(id.clone(), node.into_py(py));
+        id
     }
-    fn r#const(&self, value: f64) -> Const {
-        Const { value }
+    /// Create a Const, register it, and return its ID.
+    fn r#const(&mut self, py: Python, value: f64) -> String {
+        let id = format!("n{}", self.counter);
+        self.counter += 1;
+        let node = Const {
+            id: id.clone(),
+            value,
+        };
+        self.registry.insert(id.clone(), node.into_py(py));
+        id
+    }
+    /// Create an Add node with upstream IDs, register it, and return its ID.
+    fn add(&mut self, py: Python, inputs: Vec<String>) -> String {
+        let id = format!("n{}", self.counter);
+        self.counter += 1;
+        let node = Add {
+            id: id.clone(),
+            inputs,
+        };
+        self.registry.insert(id.clone(), node.into_py(py));
+        id
+    }
+    /// Create a Mul node with upstream IDs, register it, and return its ID.
+    fn mul(&mut self, py: Python, inputs: Vec<String>) -> String {
+        let id = format!("n{}", self.counter);
+        self.counter += 1;
+        let node = Mul {
+            id: id.clone(),
+            inputs,
+        };
+        self.registry.insert(id.clone(), node.into_py(py));
+        id
+    }
+    /// Create a Div node with upstream IDs, register it, and return its ID.
+    fn div(&mut self, py: Python, inputs: Vec<String>) -> String {
+        let id = format!("n{}", self.counter);
+        self.counter += 1;
+        let node = Div {
+            id: id.clone(),
+            inputs,
+        };
+        self.registry.insert(id.clone(), node.into_py(py));
+        id
     }
 }
 
@@ -139,53 +192,4 @@ impl Sampler {
     }
 }
 
-/// Freeze a node to a YAML description.
-#[pyfunction]
-fn freeze(obj: &PyAny) -> PyResult<String> {
-    // Build a serde_yaml::Value spec for any PyNode wrapper based on its TYPE, FIELDS, and SEQ_FIELDS
-    let py = obj.py();
-    fn freeze_val(obj: &PyAny, py: Python) -> PyResult<Value> {
-        let cls = obj.get_type();
-        // tag name
-        let tag: &str = cls.getattr("TYPE")?.extract()?;
-        // field names and which are sequences
-        let fields: Vec<String> = cls.getattr("FIELDS")?.extract()?;
-        let seq_fields: Vec<String> = cls.getattr("SEQ_FIELDS")?.extract()?;
-        let mut m = Mapping::new();
-        m.insert(Value::String("type".into()), Value::String(tag.into()));
-        for field in fields {
-            let attr = obj.getattr(field.as_str())?;
-            if seq_fields.contains(&field) {
-                let list: Vec<PyObject> = attr.extract()?;
-                let mut seq = Vec::with_capacity(list.len());
-                for elt in list {
-                    seq.push(freeze_val(elt.as_ref(py), py)?);
-                }
-                m.insert(Value::String(field.clone()), Value::Sequence(seq));
-            } else if attr.get_type().getattr("TYPE").is_ok() {
-                // nested node wrapper
-                let nested = freeze_val(attr, py)?;
-                m.insert(Value::String(field.clone()), nested);
-            } else {
-                // scalar value
-                if let Ok(x) = attr.extract::<f64>() {
-                    let v = serde_yaml::to_value(x)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                    m.insert(Value::String(field.clone()), v);
-                } else if let Ok(s) = attr.extract::<String>() {
-                    let v = serde_yaml::to_value(s)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                    m.insert(Value::String(field.clone()), v);
-                } else {
-                    return Err(PyValueError::new_err(format!(
-                        "Unsupported field '{}' for freeze",
-                        field
-                    )));
-                }
-            }
-        }
-        Ok(Value::Mapping(m))
-    }
-    let v = freeze_val(obj, py)?;
-    serde_yaml::to_string(&v).map_err(|e| PyValueError::new_err(e.to_string()))
-}
+// NOTE: freeze() will be reimplemented in Phase 2 for arena/ID flattening.
