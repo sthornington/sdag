@@ -1,6 +1,7 @@
 mod engine;
 use engine::{AddNode, ConstNode, DivNode, InputNodeImpl, MulNode, NodeDef, SamplerCore};
-//#[macro removed: py_node, PyNode derive]
+// procedural macro to generate Python node wrappers
+use py_node_macro::py_node;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 // pyo3::wrap_pyfunction no longer used
@@ -22,87 +23,48 @@ fn sdag(py: Python, m: &PyModule) -> PyResult<()> {
 }
 
 /// Python InputNode wrapper (ID node with scalar name).
-#[pyclass(name = "InputNode")]
+#[py_node(InputNodeImpl::TYPE, name)]
+#[pyclass(name = "InputNode", text_signature = "(id, name)")]
 struct InputNode {
     #[pyo3(get)]
     id: String,
     #[pyo3(get)]
     name: String,
 }
-#[pymethods]
-impl InputNode {
-    #[classattr]
-    const TYPE: &'static str = InputNodeImpl::TYPE;
-    #[classattr]
-    const FIELDS: [&'static str; 1] = ["name"];
-    #[new]
-    fn new(id: String, name: String) -> Self {
-        InputNode { id, name }
-    }
-}
 
 /// Python Const wrapper (ID node with scalar value).
-#[pyclass(name = "Const")]
+#[py_node(ConstNode::TYPE, value)]
+#[pyclass(name = "Const", text_signature = "(id, value)")]
 struct Const {
     #[pyo3(get)]
     id: String,
     #[pyo3(get)]
     value: f64,
 }
-#[pymethods]
-impl Const {
-    #[classattr]
-    const TYPE: &'static str = ConstNode::TYPE;
-    #[classattr]
-    const FIELDS: [&'static str; 1] = ["value"];
-    #[new]
-    fn new(id: String, value: f64) -> Self {
-        Const { id, value }
-    }
-}
 
 /// Python Add wrapper (ID node with upstream input IDs).
-#[pyclass(name = "Add")]
+#[py_node(AddNode::TYPE, children)]
+#[pyclass(name = "Add", text_signature = "(id, children)")]
 struct Add {
     #[pyo3(get)]
     id: String,
     #[pyo3(get)]
     children: Vec<String>,
 }
-#[pymethods]
-impl Add {
-    #[classattr]
-    const TYPE: &'static str = AddNode::TYPE;
-    #[classattr]
-    const FIELDS: [&'static str; 1] = ["children"];
-    #[new]
-    fn new(id: String, children: Vec<String>) -> Self {
-        Add { id, children }
-    }
-}
 
 /// Python Mul wrapper (ID node with upstream input IDs).
-#[pyclass(name = "Mul")]
+#[py_node(MulNode::TYPE, children)]
+#[pyclass(name = "Mul", text_signature = "(id, children)")]
 struct Mul {
     #[pyo3(get)]
     id: String,
     #[pyo3(get)]
     children: Vec<String>,
 }
-#[pymethods]
-impl Mul {
-    #[classattr]
-    const TYPE: &'static str = MulNode::TYPE;
-    #[classattr]
-    const FIELDS: [&'static str; 1] = ["children"];
-    #[new]
-    fn new(id: String, children: Vec<String>) -> Self {
-        Mul { id, children }
-    }
-}
 
 /// Python Div wrapper (ID node with upstream input IDs).
-#[pyclass(name = "Div")]
+#[py_node(DivNode::TYPE, left, right)]
+#[pyclass(name = "Div", text_signature = "(id, left, right)")]
 struct Div {
     #[pyo3(get)]
     id: String,
@@ -110,18 +72,6 @@ struct Div {
     left: String,
     #[pyo3(get)]
     right: String,
-}
-#[pymethods]
-impl Div {
-    #[classattr]
-    const TYPE: &'static str = DivNode::TYPE;
-    #[classattr]
-    const FIELDS: [&'static str; 2] = ["left", "right"];
-    #[new]
-    #[pyo3(signature = (id, left, right))]
-    fn new(id: String, left: String, right: String) -> Self {
-        Div { id, left, right }
-    }
 }
 
 /// Python Graph (factory) wrapper storing nodes by unique ID.
@@ -192,6 +142,7 @@ impl Graph {
     /// Freeze the graph (reachable from `root_id`) into a flat YAML spec.
     fn freeze(&self, py: Python, root_id: &str) -> PyResult<String> {
         // collect nodes reachable from root via declared fields
+        // collect nodes reachable from root via attributes on the Python node objects
         let mut seen = Vec::new();
         let mut stack = vec![root_id.to_string()];
         while let Some(id) = stack.pop() {
@@ -203,6 +154,7 @@ impl Graph {
                 .registry
                 .get(&id)
                 .ok_or_else(|| PyValueError::new_err(format!("Unknown node ID '{}'", id)))?;
+            // collect dependencies via declared fields
             let cls = obj.as_ref(py).get_type();
             if let Ok(fields) = cls.getattr("FIELDS") {
                 if let Ok(list) = fields.extract::<Vec<String>>() {
@@ -223,23 +175,27 @@ impl Graph {
         let mut nodes_map = Mapping::new();
         for id in seen {
             let obj = self.registry.get(&id).unwrap();
-            let cls = obj.as_ref(py).get_type();
             let mut m = Mapping::new();
+            let cls = obj.as_ref(py).get_type();
             let tag: String = cls.getattr("TYPE")?.extract()?;
             m.insert(Value::String("type".into()), Value::String(tag));
+            // serialize fields per declared FIELDS
             let fields: Vec<String> = cls.getattr("FIELDS")?.extract()?;
             for field in fields {
                 let val = obj.as_ref(py).getattr(field.as_str())?;
-                let value = if let Ok(ids) = val.extract::<Vec<String>>() {
+                let entry = if let Ok(ids) = val.extract::<Vec<String>>() {
                     Value::Sequence(ids.into_iter().map(Value::String).collect())
                 } else if let Ok(s) = val.extract::<String>() {
                     Value::String(s)
                 } else if let Ok(f) = val.extract::<f64>() {
                     serde_yaml::to_value(f).map_err(|e| PyValueError::new_err(e.to_string()))?
                 } else {
-                    return Err(PyValueError::new_err(format!("Unsupported field '{}' on node '{}'", field, id)));
+                    return Err(PyValueError::new_err(format!(
+                        "Unsupported field '{}' on node '{}'",
+                        field, id
+                    )));
                 };
-                m.insert(Value::String(field), value);
+                m.insert(Value::String(field), entry);
             }
             nodes_map.insert(Value::String(id), Value::Mapping(m));
         }

@@ -24,11 +24,13 @@ rows = [
 ]
 
 # Create and run sampler entirely in Rust
-mid_id = g.mul([bid, ask])
-wmp_id = g.div(top, bottom)
+mid_id = mid
+wmp_id = wmp
 
 s_yaml = g.freeze(mid_id)
+print("s_yaml:", s_yaml)
 w_yaml = g.freeze(wmp_id)
+print("w_yaml:", w_yaml)
 
 s = Sampler(trigger=s_yaml, output=[s_yaml, w_yaml])
 results = s.run(rows)
