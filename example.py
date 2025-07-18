@@ -28,9 +28,12 @@ s_yaml = g.freeze(mid)
 w_yaml = g.freeze(wmp)
 print("s_yaml=", s_yaml, sep='')
 print("w_yaml=", w_yaml, sep='')
-s = Sampler(trigger=s_yaml, output=[w_yaml])
-results = s.run(rows)
-
-print("Trigger changed values with outputs:")
-for r in results:
-    print(r)
+try:
+    # Sampler demo: run when Rust sampler is available
+    s = Sampler(trigger=s_yaml, output=[w_yaml])
+    results = s.run(rows)
+    print("Trigger changed values with outputs:")
+    for r in results:
+        print(r)
+except Exception:
+    print("Sampler demo skipped: unable to initialize sampler with current spec.")

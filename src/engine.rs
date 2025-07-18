@@ -7,6 +7,28 @@ pub trait Node {
     fn eval(&self, row: &HashMap<String, f64>) -> f64;
 }
 
+/// Extract a single-node spec (mapping with 'type') or unpack a full-graph spec by root
+pub(crate) fn extract_node_spec(val: &Value) -> Result<Value, String> {
+    let map = val.as_mapping().ok_or_else(|| "Spec must be a mapping".to_string())?;
+    // single-node spec
+    if map.contains_key(&Value::String("type".into())) {
+        return Ok(val.clone());
+    }
+    // graph spec
+    let root = map
+        .get(&Value::String("root".into()))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Missing 'root' in graph spec".to_string())?;
+    let nodes = map
+        .get(&Value::String("nodes".into()))
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| "Missing 'nodes' in graph spec".to_string())?;
+    nodes
+        .get(&Value::String(root.into()))
+        .cloned()
+        .ok_or_else(|| format!("Graph spec: root '{}' not found", root))
+}
+
 /// Extension trait tying a YAML `type` tag to its builder.
 pub trait NodeDef: Node + Sized {
     /// The `type` tag used in YAML to identify this node.
@@ -186,51 +208,17 @@ impl SamplerCore {
     pub fn new(trigger_yaml: &str, output_yamls: &[&str]) -> Result<Self, String> {
         // unwrap either a single-node or full graph spec for trigger
         let tval: Value = serde_yaml::from_str(trigger_yaml).map_err(|e| e.to_string())?;
-        let trigger_map = tval
-            .as_mapping()
-            .ok_or_else(|| "Trigger spec not a mapping".to_string())?;
-        let trigger_spec = if trigger_map.contains_key(&Value::String("type".into())) {
-            tval.clone()
-        } else {
-            // full graph: extract root node spec
-            let root = trigger_map
-                .get(&Value::String("root".into()))
-                .and_then(Value::as_str)
-                .ok_or_else(|| "Graph spec missing 'root'".to_string())?;
-            let nodes_map = trigger_map
-                .get(&Value::String("nodes".into()))
-                .and_then(Value::as_mapping)
-                .ok_or_else(|| "Graph spec missing 'nodes' mapping".to_string())?;
-            nodes_map
-                .get(&Value::String(root.into()))
-                .cloned()
-                .ok_or_else(|| format!("Root node '{}' not found", root))?
-        };
+        let trigger_spec = extract_node_spec(&tval)
+            .map_err(|e| format!("Invalid trigger spec: {}", e))?;
         let trigger = build_node(&trigger_spec)?;
-        // unwrap output specs similarly
+
+        // unwrap each output spec similarly
         let mut outputs = Vec::with_capacity(output_yamls.len());
-        for &s in output_yamls {
-            let oval: Value = serde_yaml::from_str(s).map_err(|e| e.to_string())?;
-            let omap = oval
-                .as_mapping()
-                .ok_or_else(|| "Output spec not a mapping".to_string())?;
-            let out_spec = if omap.contains_key(&Value::String("type".into())) {
-                oval.clone()
-            } else {
-                let root = omap
-                    .get(&Value::String("root".into()))
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| "Output graph missing 'root'".to_string())?;
-                let nodes_map = omap
-                    .get(&Value::String("nodes".into()))
-                    .and_then(Value::as_mapping)
-                    .ok_or_else(|| "Output graph missing 'nodes' mapping".to_string())?;
-                nodes_map
-                    .get(&Value::String(root.into()))
-                    .cloned()
-                    .ok_or_else(|| format!("Output root '{}' not found", root))?
-            };
-            outputs.push(build_node(&out_spec)?);
+        for &yml in output_yamls {
+            let oval: Value = serde_yaml::from_str(yml).map_err(|e| e.to_string())?;
+            let spec = extract_node_spec(&oval)
+                .map_err(|e| format!("Invalid output spec: {}", e))?;
+            outputs.push(build_node(&spec)?);
         }
         Ok(SamplerCore { trigger, outputs })
     }
