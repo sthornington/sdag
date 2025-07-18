@@ -40,10 +40,12 @@ pub trait NodeDef: Node + Sized {
 pub type BuilderFn = fn(&Value) -> Result<Box<dyn Node + Send + Sync>, String>;
 
 /// Registration record for a YAML→Node builder
+/// Registration record for a YAML→Node builder
 pub struct Builder {
     pub tag: &'static str,
     pub build: BuilderFn,
 }
+// Collect all Builder registrations into an inventory registry
 inventory::collect!(Builder);
 
 /// Dispatch to the builder based on the YAML `type` field.
@@ -200,6 +202,23 @@ impl NodeDef for DivNode {
 pub struct SamplerCore {
     trigger: Box<dyn Node + Send + Sync>,
     outputs: Vec<Box<dyn Node + Send + Sync>>,
+}
+
+// Register all built-in node builders into the inventory
+inventory::submit! {
+    Builder { tag: InputNodeImpl::TYPE, build: InputNodeImpl::from_yaml }
+}
+inventory::submit! {
+    Builder { tag: ConstNode::TYPE, build: ConstNode::from_yaml }
+}
+inventory::submit! {
+    Builder { tag: AddNode::TYPE, build: AddNode::from_yaml }
+}
+inventory::submit! {
+    Builder { tag: MulNode::TYPE, build: MulNode::from_yaml }
+}
+inventory::submit! {
+    Builder { tag: DivNode::TYPE, build: DivNode::from_yaml }
 }
 impl SamplerCore {
     pub fn new(trigger_yaml: &str, output_yamls: &[&str]) -> Result<Self, String> {
