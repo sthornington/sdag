@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::quote;
-use syn::{parse_macro_input, AttributeArgs, Data, DeriveInput, Fields, ItemStruct, Meta, NestedMeta};
+use syn::{parse_macro_input, AttributeArgs, Data, DeriveInput, Fields, Meta, NestedMeta};
 
 /// Attribute macro for Python-node wrappers that auto-generates classattrs:
 ///   TYPE (from the engine node), FIELDS (all field names), SEQ_FIELDS (Vec-typed fields).
@@ -53,59 +53,47 @@ pub fn derive_py_node(input: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn py_node(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Expect exactly one path argument, e.g. #[py_node(EngineNodeImpl)]
+    // Single argument is the engine node path: #[py_node(FooNodeImpl)]
     let args = parse_macro_input!(attr as AttributeArgs);
-    let engine_path = if args.len() == 1 {
+    let engine = if args.len() == 1 {
         match &args[0] {
             NestedMeta::Meta(Meta::Path(p)) => p.clone(),
-            _ => {
-                return syn::Error::new_spanned(
-                    &args[0], "expected a single path argument for #[py_node]")
-                    .to_compile_error()
-                    .into()
-            }
+            other => return syn::Error::new_spanned(other, "expected single type path").to_compile_error().into(),
         }
     } else {
-        return syn::Error::new(proc_macro2::Span::call_site(),
-            "expected one argument for #[py_node]")
+        return syn::Error::new(proc_macro2::Span::call_site(), "expected one argument for #[py_node]")
+            .to_compile_error().into();
+    };
+
+    // Parse existing impl block and inject the three classattrs
+    let mut imp = parse_macro_input!(item as syn::ItemImpl);
+    // Determine the impl target type name (e.g. Foo)
+    let struct_ident = if let syn::Type::Path(tp) = &*imp.self_ty {
+        tp.path.segments.last().unwrap().ident.clone()
+    } else {
+        return syn::Error::new_spanned(&imp.self_ty, "unsupported type for #[py_node]")
             .to_compile_error()
             .into();
     };
-    // Parse the struct to extract field names and Vec markers
-    let input = parse_macro_input!(item as ItemStruct);
-    let struct_ident = &input.ident;
-    let mut fields = Vec::new();
-    let mut seq_fields = Vec::new();
-    if let syn::Fields::Named(ref named) = input.fields {
-        for f in &named.named {
-            if let Some(ident) = &f.ident {
-                let name = ident.to_string();
-                fields.push(name.clone());
-                if let syn::Type::Path(tp) = &f.ty {
-                    if tp.path.segments.last().unwrap().ident == "Vec" {
-                        seq_fields.push(name.clone());
-                    }
-                }
-            }
-        }
-    }
-    // Build arrays
-    let f_count = fields.len();
-    let sf_count = seq_fields.len();
-    let field_strs = fields.iter().map(|s| quote! { #s });
-    let seq_strs = seq_fields.iter().map(|s| quote! { #s });
-    // Generate the impl block with classattrs
-    let gen = quote! {
-        #input
-        #[pymethods]
-        impl #struct_ident {
-            #[classattr]
-            const TYPE: &'static str = #engine_path::TYPE;
-            #[classattr]
-            const FIELDS: [&'static str; #f_count] = [#(#field_strs),*];
-            #[classattr]
-            const SEQ_FIELDS: [&'static str; #sf_count] = [#(#seq_strs),*];
-        }
-    };
-    gen.into()
+    // Build the three classattr const items
+    let meta_trait = syn::Ident::new(&format!("_{}PyNodeMeta", struct_ident), Span::call_site());
+    let type_item: syn::ImplItemConst = syn::parse2(quote! {
+        #[classattr]
+        const TYPE: &'static str = #engine::TYPE;
+    }).unwrap();
+    let fields_item: syn::ImplItemConst = syn::parse2(quote! {
+        #[classattr]
+        const FIELDS: &'static [&'static str] = <#struct_ident as #meta_trait>::FIELDS;
+    }).unwrap();
+    let seq_item: syn::ImplItemConst = syn::parse2(quote! {
+        #[classattr]
+        const SEQ_FIELDS: &'static [&'static str] = <#struct_ident as #meta_trait>::SEQ_FIELDS;
+    }).unwrap();
+    // Prepend consts to the impl
+    imp.items.splice(0..0, vec![
+        syn::ImplItem::Const(type_item),
+        syn::ImplItem::Const(fields_item),
+        syn::ImplItem::Const(seq_item),
+    ]);
+    TokenStream::from(quote!(#imp))
 }

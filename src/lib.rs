@@ -1,6 +1,6 @@
 mod engine;
-use engine::{SamplerCore, InputNodeImpl, ConstNode, AddNode, MulNode, DivNode, NodeDef};
-use py_node_derive::{py_node, PyNode};
+use engine::{AddNode, ConstNode, DivNode, InputNodeImpl, MulNode, NodeDef, SamplerCore};
+use py_node_derive::{PyNode, py_node};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
@@ -28,15 +28,14 @@ struct InputNode {
     #[pyo3(get)]
     name: String,
 }
-#[pymethods]
 #[py_node(InputNodeImpl)]
+#[pymethods]
 impl InputNode {
     #[new]
     fn new(name: String) -> Self {
         InputNode { name }
     }
 }
-
 
 /// Python Const wrapper.
 #[pyclass(name = "Const")]
@@ -45,15 +44,14 @@ struct Const {
     #[pyo3(get)]
     value: f64,
 }
-#[pymethods]
 #[py_node(ConstNode)]
+#[pymethods]
 impl Const {
     #[new]
     fn new(value: f64) -> Self {
         Const { value }
     }
 }
-
 
 /// Python Add wrapper.
 #[pyclass(name = "Add")]
@@ -62,15 +60,14 @@ struct Add {
     #[pyo3(get)]
     children: Vec<PyObject>,
 }
-#[pymethods]
 #[py_node(AddNode)]
+#[pymethods]
 impl Add {
     #[new]
     fn new(children: Vec<PyObject>) -> Self {
         Add { children }
     }
 }
-
 
 /// Python Mul wrapper.
 #[pyclass(name = "Mul")]
@@ -79,15 +76,14 @@ struct Mul {
     #[pyo3(get)]
     children: Vec<PyObject>,
 }
-#[pymethods]
 #[py_node(MulNode)]
+#[pymethods]
 impl Mul {
     #[new]
     fn new(children: Vec<PyObject>) -> Self {
         Mul { children }
     }
 }
-
 
 /// Python Div wrapper.
 #[pyclass(name = "Div")]
@@ -98,15 +94,14 @@ struct Div {
     #[pyo3(get)]
     right: PyObject,
 }
-#[pymethods]
 #[py_node(DivNode)]
+#[pymethods]
 impl Div {
     #[new]
     fn new(left: PyObject, right: PyObject) -> Self {
         Div { left, right }
     }
 }
-
 
 /// Python Graph (factory) wrapper.
 #[pyclass]
@@ -182,9 +177,10 @@ fn freeze(obj: &PyAny) -> PyResult<String> {
                         .map_err(|e| PyValueError::new_err(e.to_string()))?;
                     m.insert(Value::String(field.clone()), v);
                 } else {
-                    return Err(PyValueError::new_err(
-                        format!("Unsupported field '{}' for freeze", field)
-                    ));
+                    return Err(PyValueError::new_err(format!(
+                        "Unsupported field '{}' for freeze",
+                        field
+                    )));
                 }
             }
         }
