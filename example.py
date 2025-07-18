@@ -5,16 +5,15 @@ Example usage of the sdag computational DAG DSL and evaluation.
 from sdag import *
 
 # Build a simple weighted midpoint vs. weighted mean-price example
-bid = InputNode("bid")
-bid_size = InputNode("bid_size")
-ask = InputNode("ask")
-ask_size = InputNode("ask_size")
-top = Add([Mul([bid, ask_size]), Mul([ask, bid_size])])
-bottom = Add([bid_size, ask_size])
-wmp = Div(top, bottom)
-# initialize factory before using g
 g = Graph()
-mid = Mul([g.add([bid, ask]), g.const(0.5)])
+bid = g.input("bid")
+bid_size = g.input("bid_size")
+ask = g.input("ask")
+ask_size = g.input("ask_size")
+top = g.add([g.mul([bid, ask_size]), g.mul([ask, bid_size])])
+bottom = g.add([bid_size, ask_size])
+wmp = g.div([top, bottom])
+mid = g.mul([bid, ask])
 
 # Example rows as list of Python dicts
 rows = [
@@ -25,10 +24,13 @@ rows = [
 ]
 
 # Create and run sampler entirely in Rust
-mid_yaml = freeze(mid)
-wmp_yaml = freeze(wmp)
+mid_id = g.mul([bid, ask])
+wmp_id = g.div([bid, ask])
 
-s = Sampler(trigger=mid_yaml, output=[mid_yaml, wmp_yaml])
+s_yaml = g.freeze(mid_id)
+w_yaml = g.freeze(wmp_id)
+
+s = Sampler(trigger=s_yaml, output=[s_yaml, w_yaml])
 results = s.run(rows)
 
 print("Trigger changed values with outputs:")

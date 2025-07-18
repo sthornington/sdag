@@ -3,8 +3,8 @@ use engine::{AddNode, ConstNode, DivNode, InputNodeImpl, MulNode, NodeDef, Sampl
 //#[macro removed: py_node, PyNode derive]
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-// use pyo3::wrap_pyfunction;
-// use serde_yaml::{Mapping, Value};
+// pyo3::wrap_pyfunction no longer used
+use serde_yaml::{Mapping, Value};
 use std::collections::HashMap;
 
 /// Python bindings and top-level module definitions.
@@ -31,6 +31,8 @@ struct InputNode {
 }
 #[pymethods]
 impl InputNode {
+    #[classattr]
+    const TYPE: &'static str = InputNodeImpl::TYPE;
     #[new]
     fn new(id: String, name: String) -> Self {
         InputNode { id, name }
@@ -47,6 +49,8 @@ struct Const {
 }
 #[pymethods]
 impl Const {
+    #[classattr]
+    const TYPE: &'static str = ConstNode::TYPE;
     #[new]
     fn new(id: String, value: f64) -> Self {
         Const { id, value }
@@ -63,6 +67,8 @@ struct Add {
 }
 #[pymethods]
 impl Add {
+    #[classattr]
+    const TYPE: &'static str = AddNode::TYPE;
     #[new]
     fn new(id: String, inputs: Vec<String>) -> Self {
         Add { id, inputs }
@@ -79,6 +85,8 @@ struct Mul {
 }
 #[pymethods]
 impl Mul {
+    #[classattr]
+    const TYPE: &'static str = MulNode::TYPE;
     #[new]
     fn new(id: String, inputs: Vec<String>) -> Self {
         Mul { id, inputs }
@@ -95,6 +103,8 @@ struct Div {
 }
 #[pymethods]
 impl Div {
+    #[classattr]
+    const TYPE: &'static str = DivNode::TYPE;
     #[new]
     fn new(id: String, inputs: Vec<String>) -> Self {
         Div { id, inputs }
@@ -170,6 +180,60 @@ impl Graph {
         };
         self.registry.insert(id.clone(), node.into_py(py));
         id
+    }
+
+    /// Freeze the graph (reachable from `root_id`) into a flat YAML spec.
+    fn freeze(&self, py: Python, root_id: &str) -> PyResult<String> {
+        // collect nodes reachable from root via inputs
+        let mut seen = Vec::new();
+        let mut stack = vec![root_id.to_string()];
+        while let Some(id) = stack.pop() {
+            if seen.contains(&id) {
+                continue;
+            }
+            seen.push(id.clone());
+            let obj = self
+                .registry
+                .get(&id)
+                .ok_or_else(|| PyValueError::new_err(format!("Unknown node ID '{}'", id)))?;
+            if let Ok(field) = obj.as_ref(py).getattr("inputs") {
+                if let Ok(ids) = field.extract::<Vec<String>>() {
+                    for cid in ids {
+                        stack.push(cid);
+                    }
+                }
+            }
+        }
+        // produce topological order (reverse of DFS visitation)
+        seen.reverse();
+        let mut nodes_map = Mapping::new();
+        for id in seen {
+            let obj = self.registry.get(&id).unwrap();
+            let cls = obj.as_ref(py).get_type();
+            let mut m = Mapping::new();
+            let tag: String = cls.getattr("TYPE")?.extract()?;
+            m.insert(Value::String("type".into()), Value::String(tag));
+            if cls.is_subclass_of::<InputNode>()? {
+                let name: String = obj.as_ref(py).getattr("name")?.extract()?;
+                m.insert(Value::String("name".into()), Value::String(name));
+            } else if cls.is_subclass_of::<Const>()? {
+                let v: f64 = obj.as_ref(py).getattr("value")?.extract()?;
+                m.insert(
+                    Value::String("value".into()),
+                    serde_yaml::to_value(v).map_err(|e| PyValueError::new_err(e.to_string()))?,
+                );
+            } else {
+                let ids: Vec<String> = obj.as_ref(py).getattr("inputs")?.extract()?;
+                let seq = ids.into_iter().map(Value::String).collect();
+                m.insert(Value::String("inputs".into()), Value::Sequence(seq));
+            }
+            nodes_map.insert(Value::String(id), Value::Mapping(m));
+        }
+        let mut top = Mapping::new();
+        top.insert(Value::String("nodes".into()), Value::Mapping(nodes_map));
+        top.insert(Value::String("root".into()), Value::String(root_id.into()));
+        serde_yaml::to_string(&Value::Mapping(top))
+            .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 }
 
