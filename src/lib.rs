@@ -153,92 +153,91 @@ impl Graph {
     /// Freeze the graph (reachable from `root`) into a flat YAML spec.
     #[pyo3(signature = (root))]
     fn freeze(&self, py: Python, root: PyObject) -> PyResult<String> {
-        // collect nodes reachable from root via declared fields on the Python node objects
+        // Discover reachable nodes and collect their string IDs
         let mut seen = Vec::new();
-        let root_id: String = root.as_ref(py).getattr("id")?.extract()?;
+        let root_str: String = root.as_ref(py).getattr("id")?.extract()?;
         let mut stack = vec![root.clone()];
         while let Some(obj) = stack.pop() {
             let id: String = obj.as_ref(py).getattr("id")?.extract()?;
-            if seen.contains(&id) {
-                continue;
-            }
+            if seen.contains(&id) { continue; }
             seen.push(id.clone());
-            // collect dependencies via declared FIELDS
             let cls = obj.as_ref(py).get_type();
             if let Ok(fields) = cls.getattr("FIELDS") {
                 if let Ok(field_names) = fields.extract::<Vec<String>>() {
                     for field in field_names {
                         let val = obj.as_ref(py).getattr(field.as_str())?;
-                        // sequence of dependencies
                         if let Ok(seq) = val.cast_as::<PySequence>() {
                             for item in seq.iter()? {
-                                let child_any = item?;
-                                if let Ok(child) = child_any.extract::<PyObject>() {
-                                    if child.as_ref(py).get_type().getattr("TYPE").is_ok() {
-                                        stack.push(child);
-                                    }
-                                }
-                            }
-                        } else {
-                            // single dependency
-                            if let Ok(child) = val.extract::<PyObject>() {
+                                let child: PyObject = item?.extract()?;
                                 if child.as_ref(py).get_type().getattr("TYPE").is_ok() {
                                     stack.push(child);
                                 }
+                            }
+                        } else if let Ok(child) = val.extract::<PyObject>() {
+                            if child.as_ref(py).get_type().getattr("TYPE").is_ok() {
+                                stack.push(child);
                             }
                         }
                     }
                 }
             }
         }
-        // produce topological order (reverse of DFS visitation)
+        // Reverse to get a topological (parents after children) order
         seen.reverse();
-        let mut nodes_map = Mapping::new();
-        for id in seen {
-            let obj = self
-                .registry
-                .get(&id)
-                .ok_or_else(|| PyValueError::new_err(format!("Unknown node ID '{}'", id)))?;
-            let mut m = Mapping::new();
-            let cls = obj.as_ref(py).get_type();
-            let tag: String = cls.getattr("TYPE")?.extract()?;
-            m.insert(Value::String("type".into()), Value::String(tag));
-            // serialize fields per declared FIELDS
-            let fields: Vec<String> = cls.getattr("FIELDS")?.extract()?;
+
+        // Assign each string ID a numeric NodeId
+        let mut id2idx = HashMap::new();
+        for (i, sid) in seen.iter().enumerate() {
+            id2idx.insert(sid.clone(), i);
+        }
+        let root_idx = *id2idx.get(&root_str).unwrap();
+
+        // Build an arena-style YAML spec: a sequence of node mappings
+        let mut nodes_seq = Vec::with_capacity(seen.len());
+        for sid in &seen {
+            let obj = self.registry.get(sid)
+                .ok_or_else(|| PyValueError::new_err(format!("Unknown node ID '{}'", sid)))?;
+            let mut mapping = Mapping::new();
+            // numeric ID
+            mapping.insert(
+                Value::String("id".into()),
+                serde_yaml::to_value(id2idx[sid]).unwrap(),
+            );
+            // type tag
+            let tag: String = obj.as_ref(py).get_type().getattr("TYPE")?.extract()?;
+            mapping.insert(Value::String("type".into()), Value::String(tag));
+            // each declared field
+            let fields: Vec<String> = obj.as_ref(py).get_type().getattr("FIELDS")?.extract()?;
             for field in fields {
                 let val = obj.as_ref(py).getattr(field.as_str())?;
-                let entry = if let Ok(children) = val.extract::<Vec<PyObject>>() {
-                    let mut seq = Vec::new();
-                    for child in children {
-                        let cid: String = child.as_ref(py).getattr("id")?.extract()?;
-                        seq.push(Value::String(cid));
+                let entry = if let Ok(seq) = val.cast_as::<PySequence>() {
+                    let mut idxs = Vec::new();
+                    for item in seq.iter()? {
+                        let cid: String = item?.extract()?;
+                        idxs.push(Value::Number(serde_yaml::Number::from(id2idx[&cid] as i64)));
                     }
-                    Value::Sequence(seq)
+                    Value::Sequence(idxs)
+                } else if let Ok(child) = val.extract::<PyObject>() {
+                    let cid: String = child.as_ref(py).getattr("id")?.extract()?;
+                    Value::Number(serde_yaml::Number::from(id2idx[&cid] as i64))
                 } else if let Ok(s) = val.extract::<String>() {
                     Value::String(s)
                 } else if let Ok(f) = val.extract::<f64>() {
                     serde_yaml::to_value(f).map_err(|e| PyValueError::new_err(e.to_string()))?
-                } else if let Ok(child) = val.extract::<PyObject>() {
-                    // single upstream node
-                    let cid: String = child.as_ref(py).getattr("id")?.extract()?;
-                    Value::String(cid)
                 } else {
                     return Err(PyValueError::new_err(format!(
-                        "Unsupported field '{}' on node '{}'",
-                        field, id
+                        "Unsupported field '{}' on node '{}'", field, sid
                     )));
                 };
-                m.insert(Value::String(field), entry);
+                mapping.insert(Value::String(field), entry);
             }
-            nodes_map.insert(Value::String(id), Value::Mapping(m));
+            nodes_seq.push(Value::Mapping(mapping));
         }
+
         let mut top = Mapping::new();
-        top.insert(Value::String("nodes".into()), Value::Mapping(nodes_map));
-        top.insert(
-            Value::String("root".into()),
-            Value::String(root.as_ref(py).getattr("id")?.extract()?),
-        );
-        // serialize to YAML and trim trailing newline for embedding
+        top.insert(Value::String("nodes".into()), Value::Sequence(nodes_seq));
+        top.insert(Value::String("root".into()), Value::Number(serde_yaml::Number::from(root_idx as i64)));
+
         let yaml = serde_yaml::to_string(&Value::Mapping(top))
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(yaml.trim_end_matches('\n').to_string())

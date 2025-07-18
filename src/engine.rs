@@ -18,14 +18,26 @@ pub(crate) fn extract_node_spec(val: &Value) -> Result<Value, String> {
         .get(&Value::String("root".into()))
         .and_then(Value::as_str)
         .ok_or_else(|| "Missing 'root' in graph spec".to_string())?;
-    let nodes = map
-        .get(&Value::String("nodes".into()))
-        .and_then(Value::as_mapping)
-        .ok_or_else(|| "Missing 'nodes' in graph spec".to_string())?;
-    nodes
-        .get(&Value::String(root.into()))
-        .cloned()
-        .ok_or_else(|| format!("Graph spec: root '{}' not found", root))
+    // graph spec: nodes as mapping or sequence
+    if let Some(nmap) = map.get(&Value::String("nodes".into())).and_then(Value::as_mapping) {
+        return nmap
+            .get(&Value::String(root.into()))
+            .cloned()
+            .ok_or_else(|| format!("Graph spec: root '{}' not found", root));
+    }
+    if let Some(nseq) = map.get(&Value::String("nodes".into())).and_then(Value::as_sequence) {
+        for node in nseq {
+            if let Some(m) = node.as_mapping() {
+                if let Some(idv) = m.get(&Value::String("id".into())).and_then(Value::as_i64) {
+                    if idv.to_string() == root {
+                        return Ok(Value::Mapping(m.clone()));
+                    }
+                }
+            }
+        }
+        return Err(format!("Graph spec: root '{}' not found in nodes list", root));
+    }
+    Err("Missing 'nodes' in graph spec".to_string())
 }
 
 /// Extension trait tying a YAML `type` tag to its builder.
