@@ -6,7 +6,7 @@ use syn::{parse::Parse, parse_macro_input, punctuated::Punctuated, token::Comma,
 #[proc_macro_attribute]
 pub fn py_node(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as PyNodeArgs);
-    let mut strukt = parse_macro_input!(item as ItemStruct);
+    let strukt = parse_macro_input!(item as ItemStruct);
     let struct_name = &strukt.ident;
     // collect field idents and types from struct
     let mut fields = Vec::new();
@@ -35,11 +35,13 @@ pub fn py_node(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
     // build signature args tokens
-    let sig_args: Vec<proc_macro2::TokenStream> = std::iter::once(quote! { id })
+    let _sig_args: Vec<proc_macro2::TokenStream> = std::iter::once(quote! { id })
         .chain(field_idents.iter().map(|id| quote! { #id }))
         .collect();
     // build constructor mapping
-    let ctor_vals: Vec<proc_macro2::TokenStream> = std::iter::once(quote! {}).chain(field_idents.iter().map(|id| quote! { #id })).collect();
+    let _ctor_vals: Vec<proc_macro2::TokenStream> = std::iter::once(quote! {})
+        .chain(field_idents.iter().map(|id| quote! { #id }))
+        .collect();
     // generate impl
     let expanded = quote! {
         #strukt

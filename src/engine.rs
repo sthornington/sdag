@@ -184,12 +184,47 @@ pub struct SamplerCore {
 }
 impl SamplerCore {
     pub fn new(trigger_yaml: &str, output_yamls: &[&str]) -> Result<Self, String> {
-        let trigger_val: Value = serde_yaml::from_str(trigger_yaml).map_err(|e| e.to_string())?;
-        let trigger = build_node(&trigger_val)?;
+        // allow either a full graph spec or a single-node spec
+        let val: Value = serde_yaml::from_str(trigger_yaml).map_err(|e| e.to_string())?;
+        let trigger_spec = if let Some(map) = val.as_mapping() {
+            if let (Some(root), Some(nodes)) = (
+                map.get(&Value::String("root".into())),
+                map.get(&Value::String("nodes".into())),
+            ) {
+                let root_id = root.as_str().ok_or("Invalid root field")?;
+                let nodes_map = nodes.as_mapping().ok_or("Invalid nodes mapping")?;
+                nodes_map
+                    .get(&Value::String(root_id.into()))
+                    .ok_or_else(|| format!("Unknown root node '{}'", root_id))?
+                    .clone()
+            } else {
+                Value::Mapping(map.clone())
+            }
+        } else {
+            val.clone()
+        };
+        let trigger = build_node(&trigger_spec)?;
         let mut outputs = Vec::with_capacity(output_yamls.len());
         for &s in output_yamls {
-            let v: Value = serde_yaml::from_str(s).map_err(|e| e.to_string())?;
-            outputs.push(build_node(&v)?);
+            let val: Value = serde_yaml::from_str(s).map_err(|e| e.to_string())?;
+            let spec = if let Some(map) = val.as_mapping() {
+                if let (Some(root), Some(nodes)) = (
+                    map.get(&Value::String("root".into())),
+                    map.get(&Value::String("nodes".into())),
+                ) {
+                    let root_id = root.as_str().ok_or("Invalid root field")?;
+                    let nodes_map = nodes.as_mapping().ok_or("Invalid nodes mapping")?;
+                    nodes_map
+                        .get(&Value::String(root_id.into()))
+                        .ok_or_else(|| format!("Unknown root node '{}'", root_id))?
+                        .clone()
+                } else {
+                    Value::Mapping(map.clone())
+                }
+            } else {
+                val.clone()
+            };
+            outputs.push(build_node(&spec)?);
         }
         Ok(SamplerCore { trigger, outputs })
     }

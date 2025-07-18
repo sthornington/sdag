@@ -24,17 +24,9 @@ rows = [
 ]
 
 # Create and run sampler entirely in Rust
-mid_id = mid
-wmp_id = wmp
+s_yaml = g.freeze(mid)
+print(s_yaml)
+w_yaml = g.freeze(wmp)
+print(w_yaml)
 
-s_yaml = g.freeze(mid_id)
-print("s_yaml:", s_yaml)
-w_yaml = g.freeze(wmp_id)
-print("w_yaml:", w_yaml)
-
-s = Sampler(trigger=s_yaml, output=[s_yaml, w_yaml])
-results = s.run(rows)
-
-print("Trigger changed values with outputs:")
-for r in results:
-    print(r)
+# Sampler demonstration removed; show YAML specs only
