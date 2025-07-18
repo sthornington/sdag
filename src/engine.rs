@@ -184,47 +184,53 @@ pub struct SamplerCore {
 }
 impl SamplerCore {
     pub fn new(trigger_yaml: &str, output_yamls: &[&str]) -> Result<Self, String> {
-        // allow either a full graph spec or a single-node spec
-        let val: Value = serde_yaml::from_str(trigger_yaml).map_err(|e| e.to_string())?;
-        let trigger_spec = if let Some(map) = val.as_mapping() {
-            if let (Some(root), Some(nodes)) = (
-                map.get(&Value::String("root".into())),
-                map.get(&Value::String("nodes".into())),
-            ) {
-                let root_id = root.as_str().ok_or("Invalid root field")?;
-                let nodes_map = nodes.as_mapping().ok_or("Invalid nodes mapping")?;
-                nodes_map
-                    .get(&Value::String(root_id.into()))
-                    .ok_or_else(|| format!("Unknown root node '{}'", root_id))?
-                    .clone()
-            } else {
-                Value::Mapping(map.clone())
-            }
+        // unwrap either a single-node or full graph spec for trigger
+        let tval: Value = serde_yaml::from_str(trigger_yaml).map_err(|e| e.to_string())?;
+        let trigger_map = tval
+            .as_mapping()
+            .ok_or_else(|| "Trigger spec not a mapping".to_string())?;
+        let trigger_spec = if trigger_map.contains_key(&Value::String("type".into())) {
+            tval.clone()
         } else {
-            val.clone()
+            // full graph: extract root node spec
+            let root = trigger_map
+                .get(&Value::String("root".into()))
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Graph spec missing 'root'".to_string())?;
+            let nodes_map = trigger_map
+                .get(&Value::String("nodes".into()))
+                .and_then(Value::as_mapping)
+                .ok_or_else(|| "Graph spec missing 'nodes' mapping".to_string())?;
+            nodes_map
+                .get(&Value::String(root.into()))
+                .cloned()
+                .ok_or_else(|| format!("Root node '{}' not found", root))?
         };
         let trigger = build_node(&trigger_spec)?;
+        // unwrap output specs similarly
         let mut outputs = Vec::with_capacity(output_yamls.len());
         for &s in output_yamls {
-            let val: Value = serde_yaml::from_str(s).map_err(|e| e.to_string())?;
-            let spec = if let Some(map) = val.as_mapping() {
-                if let (Some(root), Some(nodes)) = (
-                    map.get(&Value::String("root".into())),
-                    map.get(&Value::String("nodes".into())),
-                ) {
-                    let root_id = root.as_str().ok_or("Invalid root field")?;
-                    let nodes_map = nodes.as_mapping().ok_or("Invalid nodes mapping")?;
-                    nodes_map
-                        .get(&Value::String(root_id.into()))
-                        .ok_or_else(|| format!("Unknown root node '{}'", root_id))?
-                        .clone()
-                } else {
-                    Value::Mapping(map.clone())
-                }
+            let oval: Value = serde_yaml::from_str(s).map_err(|e| e.to_string())?;
+            let omap = oval
+                .as_mapping()
+                .ok_or_else(|| "Output spec not a mapping".to_string())?;
+            let out_spec = if omap.contains_key(&Value::String("type".into())) {
+                oval.clone()
             } else {
-                val.clone()
+                let root = omap
+                    .get(&Value::String("root".into()))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "Output graph missing 'root'".to_string())?;
+                let nodes_map = omap
+                    .get(&Value::String("nodes".into()))
+                    .and_then(Value::as_mapping)
+                    .ok_or_else(|| "Output graph missing 'nodes' mapping".to_string())?;
+                nodes_map
+                    .get(&Value::String(root.into()))
+                    .cloned()
+                    .ok_or_else(|| format!("Output root '{}' not found", root))?
             };
-            outputs.push(build_node(&spec)?);
+            outputs.push(build_node(&out_spec)?);
         }
         Ok(SamplerCore { trigger, outputs })
     }

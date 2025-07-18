@@ -23,14 +23,12 @@ rows = [
     {"bid": 101.0, "ask": 102.0, "bid_size": 12.0, "ask_size": 14.0},
 ]
 
-# Create and run sampler entirely in Rust
+## Create and run sampler entirely in Rust
 s_yaml = g.freeze(mid)
 w_yaml = g.freeze(wmp)
-
-## Call sampler to evaluate when trigger changes
-print("Trigger YAML:\n", s_yaml)
-print("Output YAML:\n", w_yaml)
-s = Sampler(trigger=s_yaml, output=[s_yaml, w_yaml])
+print("s_yaml=", s_yaml, sep='')
+print("w_yaml=", w_yaml, sep='')
+s = Sampler(trigger=s_yaml, output=[w_yaml])
 results = s.run(rows)
 
 print("Trigger changed values with outputs:")
