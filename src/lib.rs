@@ -1,3 +1,5 @@
+#[macro_use]
+extern crate inventory;
 mod engine;
 use engine::{AddNode, ConstNode, DivNode, InputNodeImpl, MulNode, NodeDef, SamplerCore, extract_node_spec};
 // procedural macro to generate Python node wrappers

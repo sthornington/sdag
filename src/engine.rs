@@ -1,4 +1,3 @@
-use once_cell::sync::Lazy;
 use serde_yaml::Value;
 use std::collections::HashMap;
 
@@ -39,18 +38,13 @@ pub trait NodeDef: Node + Sized {
 
 /// Build functions index: maps TYPE → NodeDef::from_yaml.
 pub type BuilderFn = fn(&Value) -> Result<Box<dyn Node + Send + Sync>, String>;
-static BUILDERS: Lazy<HashMap<String, BuilderFn>> = Lazy::new(|| {
-    let mut m = HashMap::new();
-    m.insert(
-        InputNodeImpl::TYPE.into(),
-        InputNodeImpl::from_yaml as BuilderFn,
-    );
-    m.insert(ConstNode::TYPE.into(), ConstNode::from_yaml as BuilderFn);
-    m.insert(AddNode::TYPE.into(), AddNode::from_yaml as BuilderFn);
-    m.insert(MulNode::TYPE.into(), MulNode::from_yaml as BuilderFn);
-    m.insert(DivNode::TYPE.into(), DivNode::from_yaml as BuilderFn);
-    m
-});
+
+/// Registration record for a YAML→Node builder
+pub struct Builder {
+    pub tag: &'static str,
+    pub build: BuilderFn,
+}
+inventory::collect!(Builder);
 
 /// Dispatch to the builder based on the YAML `type` field.
 pub fn build_node(v: &Value) -> Result<Box<dyn Node + Send + Sync>, String> {
@@ -61,10 +55,13 @@ pub fn build_node(v: &Value) -> Result<Box<dyn Node + Send + Sync>, String> {
         .get(&Value::String("type".into()))
         .and_then(Value::as_str)
         .ok_or_else(|| "Node spec missing 'type' field".to_string())?;
-    let builder = BUILDERS
-        .get(kind)
-        .ok_or_else(|| format!("Unknown node type '{}'", kind))?;
-    builder(v)
+    // Look up a matching builder from the inventory
+    for b in inventory::iter::<Builder> {
+        if b.tag == kind {
+            return (b.build)(v);
+        }
+    }
+    Err(format!("Unknown node type '{}'", kind))
 }
 
 /// Input node: reads a column by name.
