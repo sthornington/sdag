@@ -32,32 +32,23 @@ pub(crate) fn extract_node_spec(val: &Value) -> Result<Value, String> {
 pub trait NodeDef: Sized {
     /// The `type` tag used in YAML to identify this node.
     const TYPE: &'static str;
-    /// Parse an instance from its YAML mapping.
+    /// Build from a YAML spec value (handled by the `#[py_node]` macro).
     fn from_yaml(v: &Value) -> Result<Box<dyn Node + Send + Sync>, String>;
 }
 
-/// Build functions index: maps TYPE → NodeDef::from_yaml.
+/// Dispatch to the builder based on the YAML `type` field.
 pub type BuilderFn = fn(&Value) -> Result<Box<dyn Node + Send + Sync>, String>;
-
-/// Registration record for a YAML→Node builder
-/// Registration record for a YAML→Node builder
 pub struct Builder {
     pub tag: &'static str,
     pub build: BuilderFn,
 }
-// Collect all Builder registrations into an inventory registry
 inventory::collect!(Builder);
-
-/// Dispatch to the builder based on the YAML `type` field.
 pub fn build_node(v: &Value) -> Result<Box<dyn Node + Send + Sync>, String> {
-    let map = v
-        .as_mapping()
-        .ok_or_else(|| "Node spec must be a mapping".to_string())?;
+    let map = v.as_mapping().ok_or_else(|| "Node spec must be a mapping".to_string())?;
     let kind = map
         .get(&Value::String("type".into()))
         .and_then(Value::as_str)
         .ok_or_else(|| "Node spec missing 'type' field".to_string())?;
-    // Look up a matching builder from the inventory
     for b in inventory::iter::<Builder> {
         if b.tag == kind {
             return (b.build)(v);
@@ -70,23 +61,13 @@ pub fn build_node(v: &Value) -> Result<Box<dyn Node + Send + Sync>, String> {
 pub struct InputNodeImpl {
     pub name: String,
 }
+impl InputNodeImpl {
+    /// `type` tag for this node in YAML.
+    pub const TYPE: &'static str = "input";
+}
 impl Node for InputNodeImpl {
     fn eval(&self, row: &HashMap<String, f64>) -> f64 {
         *row.get(&self.name).unwrap_or(&0.0)
-    }
-}
-impl NodeDef for InputNodeImpl {
-    const TYPE: &'static str = "input";
-    fn from_yaml(v: &Value) -> Result<Box<dyn Node + Send + Sync>, String> {
-        let map = v
-            .as_mapping()
-            .ok_or_else(|| "Input node spec not mapping".to_string())?;
-        let name = map
-            .get(&Value::String("name".into()))
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Input node missing 'name'".to_string())?
-            .to_string();
-        Ok(Box::new(InputNodeImpl { name }))
     }
 }
 
@@ -94,22 +75,13 @@ impl NodeDef for InputNodeImpl {
 pub struct ConstNode {
     pub value: f64,
 }
+impl ConstNode {
+    /// `type` tag for this node in YAML.
+    pub const TYPE: &'static str = "const";
+}
 impl Node for ConstNode {
     fn eval(&self, _: &HashMap<String, f64>) -> f64 {
         self.value
-    }
-}
-impl NodeDef for ConstNode {
-    const TYPE: &'static str = "const";
-    fn from_yaml(v: &Value) -> Result<Box<dyn Node + Send + Sync>, String> {
-        let map = v
-            .as_mapping()
-            .ok_or_else(|| "Const node spec not mapping".to_string())?;
-        let value = map
-            .get(&Value::String("value".into()))
-            .and_then(Value::as_f64)
-            .ok_or_else(|| "Const node missing 'value'".to_string())?;
-        Ok(Box::new(ConstNode { value }))
     }
 }
 
@@ -117,26 +89,13 @@ impl NodeDef for ConstNode {
 pub struct AddNode {
     pub children: Vec<Box<dyn Node + Send + Sync>>,
 }
+impl AddNode {
+    /// `type` tag for this node in YAML.
+    pub const TYPE: &'static str = "add";
+}
 impl Node for AddNode {
     fn eval(&self, row: &HashMap<String, f64>) -> f64 {
         self.children.iter().map(|c| c.eval(row)).sum()
-    }
-}
-impl NodeDef for AddNode {
-    const TYPE: &'static str = "add";
-    fn from_yaml(v: &Value) -> Result<Box<dyn Node + Send + Sync>, String> {
-        let map = v
-            .as_mapping()
-            .ok_or_else(|| "Add node spec not mapping".to_string())?;
-        let seq = map
-            .get(&Value::String("children".into()))
-            .and_then(Value::as_sequence)
-            .ok_or_else(|| "Add node missing 'children'".to_string())?;
-        let mut children = Vec::with_capacity(seq.len());
-        for c in seq {
-            children.push(build_node(c)?);
-        }
-        Ok(Box::new(AddNode { children }))
     }
 }
 
@@ -144,26 +103,13 @@ impl NodeDef for AddNode {
 pub struct MulNode {
     pub children: Vec<Box<dyn Node + Send + Sync>>,
 }
+impl MulNode {
+    /// `type` tag for this node in YAML.
+    pub const TYPE: &'static str = "mul";
+}
 impl Node for MulNode {
     fn eval(&self, row: &HashMap<String, f64>) -> f64 {
         self.children.iter().map(|c| c.eval(row)).product()
-    }
-}
-impl NodeDef for MulNode {
-    const TYPE: &'static str = "mul";
-    fn from_yaml(v: &Value) -> Result<Box<dyn Node + Send + Sync>, String> {
-        let map = v
-            .as_mapping()
-            .ok_or_else(|| "Mul node spec not mapping".to_string())?;
-        let seq = map
-            .get(&Value::String("children".into()))
-            .and_then(Value::as_sequence)
-            .ok_or_else(|| "Mul node missing 'children'".to_string())?;
-        let mut children = Vec::with_capacity(seq.len());
-        for c in seq {
-            children.push(build_node(c)?);
-        }
-        Ok(Box::new(MulNode { children }))
     }
 }
 
@@ -172,6 +118,10 @@ pub struct DivNode {
     pub left: Box<dyn Node + Send + Sync>,
     pub right: Box<dyn Node + Send + Sync>,
 }
+impl DivNode {
+    /// `type` tag for this node in YAML.
+    pub const TYPE: &'static str = "div";
+}
 impl Node for DivNode {
     fn eval(&self, row: &HashMap<String, f64>) -> f64 {
         let l = self.left.eval(row);
@@ -179,47 +129,11 @@ impl Node for DivNode {
         l / r
     }
 }
-impl NodeDef for DivNode {
-    const TYPE: &'static str = "div";
-    fn from_yaml(v: &Value) -> Result<Box<dyn Node + Send + Sync>, String> {
-        let map = v
-            .as_mapping()
-            .ok_or_else(|| "Div node spec not mapping".to_string())?;
-        let left = map
-            .get(&Value::String("left".into()))
-            .ok_or_else(|| "Div node missing 'left'".to_string())?;
-        let right = map
-            .get(&Value::String("right".into()))
-            .ok_or_else(|| "Div node missing 'right'".to_string())?;
-        Ok(Box::new(DivNode {
-            left: build_node(left)?,
-            right: build_node(right)?,
-        }))
-    }
-}
-
-/// Core sampler that runs trigger vs outputs on rows.
 pub struct SamplerCore {
     trigger: Box<dyn Node + Send + Sync>,
     outputs: Vec<Box<dyn Node + Send + Sync>>,
 }
 
-// Register all built-in node builders into the inventory
-inventory::submit! {
-    Builder { tag: InputNodeImpl::TYPE, build: InputNodeImpl::from_yaml }
-}
-inventory::submit! {
-    Builder { tag: ConstNode::TYPE, build: ConstNode::from_yaml }
-}
-inventory::submit! {
-    Builder { tag: AddNode::TYPE, build: AddNode::from_yaml }
-}
-inventory::submit! {
-    Builder { tag: MulNode::TYPE, build: MulNode::from_yaml }
-}
-inventory::submit! {
-    Builder { tag: DivNode::TYPE, build: DivNode::from_yaml }
-}
 impl SamplerCore {
     pub fn new(trigger_yaml: &str, output_yamls: &[&str]) -> Result<Self, String> {
         // unwrap either a single-node or full graph spec for trigger
