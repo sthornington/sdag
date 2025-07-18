@@ -1,9 +1,9 @@
 mod engine;
-use engine::{SamplerCore, build_node};
+use engine::{build_node, SamplerCore, InputNodeImpl, ConstNode, AddNode, MulNode, DivNode};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
-use serde_yaml::Value;
+use serde_yaml::{Mapping, Value};
 use std::collections::HashMap;
 
 /// Python bindings and top-level module definitions.
@@ -33,6 +33,22 @@ impl InputNode {
     }
 }
 
+//impl PyNodeDef for InputNode {
+//    const TYPE: &'static str = InputNodeImpl::TYPE;
+//    fn to_spec(&self, _py: Python) -> PyResult<Value> {
+//        let mut m = Mapping::new();
+//        m.insert(Value::String("type".into()), Value::String(Self::TYPE.into()));
+//        m.insert(Value::String("name".into()), Value::String(self.name.clone()));
+//        Ok(Value::Mapping(m))
+//    }
+//}
+
+/// Trait linking Python wrapper to its engine definition and YAML spec.
+trait PyNodeDef {
+    const TYPE: &'static str;
+    fn to_spec(&self, py: Python) -> PyResult<Value>;
+}
+
 /// Python Const wrapper.
 #[pyclass(name = "Const")]
 struct Const {
@@ -45,6 +61,19 @@ impl Const {
         Const { value }
     }
 }
+
+//impl PyNodeDef for Const {
+//    const TYPE: &'static str = ConstNode::TYPE;
+//    fn to_spec(&self, _py: Python) -> PyResult<Value> {
+//        let mut m = Mapping::new();
+//        m.insert(Value::String("type".into()), Value::String(Self::TYPE.into()));
+//        m.insert(
+//            Value::String("value".into()),
+//            serde_yaml::to_value(self.value).map_err(|e| PyValueError::new_err(e.to_string()))?,
+//        );
+//        Ok(Value::Mapping(m))
+//    }
+//}
 
 /// Python Add wrapper.
 #[pyclass(name = "Add")]
@@ -59,6 +88,21 @@ impl Add {
     }
 }
 
+//impl PyNodeDef for Add {
+//    const TYPE: &'static str = AddNode::TYPE;
+//    fn to_spec(&self, py: Python) -> PyResult<Value> {
+//        let mut m = Mapping::new();
+//        m.insert(Value::String("type".into()), Value::String(Self::TYPE.into()));
+//        let mut seq = Vec::with_capacity(self.children.len());
+//        for child in &self.children {
+//            let spec = child.as_ref(py).extract::<PyRef<dyn PyNodeDef>>()?.to_spec(py)?;
+//            seq.push(spec);
+//        }
+//        m.insert(Value::String("children".into()), Value::Sequence(seq));
+//        Ok(Value::Mapping(m))
+//    }
+//}
+
 /// Python Mul wrapper.
 #[pyclass(name = "Mul")]
 struct Mul {
@@ -71,6 +115,21 @@ impl Mul {
         Mul { children }
     }
 }
+
+//impl PyNodeDef for Mul {
+//    const TYPE: &'static str = MulNode::TYPE;
+//    fn to_spec(&self, py: Python) -> PyResult<Value> {
+//        let mut m = Mapping::new();
+//        m.insert(Value::String("type".into()), Value::String(Self::TYPE.into()));
+//        let mut seq = Vec::with_capacity(self.children.len());
+//        for child in &self.children {
+//            let spec = child.as_ref(py).extract::<PyRef<dyn PyNodeDef>>()?.to_spec(py)?;
+//            seq.push(spec);
+//        }
+//        m.insert(Value::String("children".into()), Value::Sequence(seq));
+//        Ok(Value::Mapping(m))
+//    }
+//}
 
 /// Python Div wrapper.
 #[pyclass(name = "Div")]
@@ -85,6 +144,19 @@ impl Div {
         Div { left, right }
     }
 }
+
+//impl PyNodeDef for Div {
+//    const TYPE: &'static str = DivNode::TYPE;
+//    fn to_spec(&self, py: Python) -> PyResult<Value> {
+//        let mut m = Mapping::new();
+//        m.insert(Value::String("type".into()), Value::String(Self::TYPE.into()));
+//        let l = self.left.as_ref(py).extract::<PyRef<dyn PyNodeDef>>()?.to_spec(py)?;
+//        let r = self.right.as_ref(py).extract::<PyRef<dyn PyNodeDef>>()?.to_spec(py)?;
+//        m.insert(Value::String("left".into()), l);
+//        m.insert(Value::String("right".into()), r);
+//        Ok(Value::Mapping(m))
+//    }
+//}
 
 /// Python Graph (factory) wrapper.
 #[pyclass]
