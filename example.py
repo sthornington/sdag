@@ -12,7 +12,7 @@ ask = g.input("ask")
 ask_size = g.input("ask_size")
 top = g.add([g.mul([bid, ask_size]), g.mul([ask, bid_size])])
 bottom = g.add([bid_size, ask_size])
-wmp = g.div([top, bottom])
+wmp = g.div(top, bottom)
 mid = g.mul([bid, ask])
 
 # Example rows as list of Python dicts
@@ -25,7 +25,7 @@ rows = [
 
 # Create and run sampler entirely in Rust
 mid_id = g.mul([bid, ask])
-wmp_id = g.div([bid, ask])
+wmp_id = g.div(top, bottom)
 
 s_yaml = g.freeze(mid_id)
 w_yaml = g.freeze(wmp_id)

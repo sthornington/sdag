@@ -33,6 +33,8 @@ struct InputNode {
 impl InputNode {
     #[classattr]
     const TYPE: &'static str = InputNodeImpl::TYPE;
+    #[classattr]
+    const FIELDS: [&'static str; 1] = ["name"];
     #[new]
     fn new(id: String, name: String) -> Self {
         InputNode { id, name }
@@ -51,6 +53,8 @@ struct Const {
 impl Const {
     #[classattr]
     const TYPE: &'static str = ConstNode::TYPE;
+    #[classattr]
+    const FIELDS: [&'static str; 1] = ["value"];
     #[new]
     fn new(id: String, value: f64) -> Self {
         Const { id, value }
@@ -63,15 +67,17 @@ struct Add {
     #[pyo3(get)]
     id: String,
     #[pyo3(get)]
-    inputs: Vec<String>,
+    children: Vec<String>,
 }
 #[pymethods]
 impl Add {
     #[classattr]
     const TYPE: &'static str = AddNode::TYPE;
+    #[classattr]
+    const FIELDS: [&'static str; 1] = ["children"];
     #[new]
-    fn new(id: String, inputs: Vec<String>) -> Self {
-        Add { id, inputs }
+    fn new(id: String, children: Vec<String>) -> Self {
+        Add { id, children }
     }
 }
 
@@ -81,15 +87,17 @@ struct Mul {
     #[pyo3(get)]
     id: String,
     #[pyo3(get)]
-    inputs: Vec<String>,
+    children: Vec<String>,
 }
 #[pymethods]
 impl Mul {
     #[classattr]
     const TYPE: &'static str = MulNode::TYPE;
+    #[classattr]
+    const FIELDS: [&'static str; 1] = ["children"];
     #[new]
-    fn new(id: String, inputs: Vec<String>) -> Self {
-        Mul { id, inputs }
+    fn new(id: String, children: Vec<String>) -> Self {
+        Mul { id, children }
     }
 }
 
@@ -99,15 +107,20 @@ struct Div {
     #[pyo3(get)]
     id: String,
     #[pyo3(get)]
-    inputs: Vec<String>,
+    left: String,
+    #[pyo3(get)]
+    right: String,
 }
 #[pymethods]
 impl Div {
     #[classattr]
     const TYPE: &'static str = DivNode::TYPE;
+    #[classattr]
+    const FIELDS: [&'static str; 2] = ["left", "right"];
     #[new]
-    fn new(id: String, inputs: Vec<String>) -> Self {
-        Div { id, inputs }
+    #[pyo3(signature = (id, left, right))]
+    fn new(id: String, left: String, right: String) -> Self {
+        Div { id, left, right }
     }
 }
 
@@ -149,42 +162,36 @@ impl Graph {
         id
     }
     /// Create an Add node with upstream IDs, register it, and return its ID.
-    fn add(&mut self, py: Python, inputs: Vec<String>) -> String {
+    #[pyo3(signature = (children))]
+    fn add(&mut self, py: Python, children: Vec<String>) -> String {
         let id = format!("n{}", self.counter);
         self.counter += 1;
-        let node = Add {
-            id: id.clone(),
-            inputs,
-        };
+        let node = Add { id: id.clone(), children };
         self.registry.insert(id.clone(), node.into_py(py));
         id
     }
     /// Create a Mul node with upstream IDs, register it, and return its ID.
-    fn mul(&mut self, py: Python, inputs: Vec<String>) -> String {
+    #[pyo3(signature = (children))]
+    fn mul(&mut self, py: Python, children: Vec<String>) -> String {
         let id = format!("n{}", self.counter);
         self.counter += 1;
-        let node = Mul {
-            id: id.clone(),
-            inputs,
-        };
+        let node = Mul { id: id.clone(), children };
         self.registry.insert(id.clone(), node.into_py(py));
         id
     }
     /// Create a Div node with upstream IDs, register it, and return its ID.
-    fn div(&mut self, py: Python, inputs: Vec<String>) -> String {
+    #[pyo3(signature = (left, right))]
+    fn div(&mut self, py: Python, left: String, right: String) -> String {
         let id = format!("n{}", self.counter);
         self.counter += 1;
-        let node = Div {
-            id: id.clone(),
-            inputs,
-        };
+        let node = Div { id: id.clone(), left, right };
         self.registry.insert(id.clone(), node.into_py(py));
         id
     }
 
     /// Freeze the graph (reachable from `root_id`) into a flat YAML spec.
     fn freeze(&self, py: Python, root_id: &str) -> PyResult<String> {
-        // collect nodes reachable from root via inputs
+        // collect nodes reachable from root via declared fields
         let mut seen = Vec::new();
         let mut stack = vec![root_id.to_string()];
         while let Some(id) = stack.pop() {
@@ -196,10 +203,17 @@ impl Graph {
                 .registry
                 .get(&id)
                 .ok_or_else(|| PyValueError::new_err(format!("Unknown node ID '{}'", id)))?;
-            if let Ok(field) = obj.as_ref(py).getattr("inputs") {
-                if let Ok(ids) = field.extract::<Vec<String>>() {
-                    for cid in ids {
-                        stack.push(cid);
+            let cls = obj.as_ref(py).get_type();
+            if let Ok(fields) = cls.getattr("FIELDS") {
+                if let Ok(list) = fields.extract::<Vec<String>>() {
+                    for field in list {
+                        if let Ok(val) = obj.as_ref(py).getattr(field.as_str()) {
+                            if let Ok(ids) = val.extract::<Vec<String>>() {
+                                for cid in ids {
+                                    stack.push(cid);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -213,27 +227,26 @@ impl Graph {
             let mut m = Mapping::new();
             let tag: String = cls.getattr("TYPE")?.extract()?;
             m.insert(Value::String("type".into()), Value::String(tag));
-            if cls.is_subclass_of::<InputNode>()? {
-                let name: String = obj.as_ref(py).getattr("name")?.extract()?;
-                m.insert(Value::String("name".into()), Value::String(name));
-            } else if cls.is_subclass_of::<Const>()? {
-                let v: f64 = obj.as_ref(py).getattr("value")?.extract()?;
-                m.insert(
-                    Value::String("value".into()),
-                    serde_yaml::to_value(v).map_err(|e| PyValueError::new_err(e.to_string()))?,
-                );
-            } else {
-                let ids: Vec<String> = obj.as_ref(py).getattr("inputs")?.extract()?;
-                let seq = ids.into_iter().map(Value::String).collect();
-                m.insert(Value::String("inputs".into()), Value::Sequence(seq));
+            let fields: Vec<String> = cls.getattr("FIELDS")?.extract()?;
+            for field in fields {
+                let val = obj.as_ref(py).getattr(field.as_str())?;
+                let value = if let Ok(ids) = val.extract::<Vec<String>>() {
+                    Value::Sequence(ids.into_iter().map(Value::String).collect())
+                } else if let Ok(s) = val.extract::<String>() {
+                    Value::String(s)
+                } else if let Ok(f) = val.extract::<f64>() {
+                    serde_yaml::to_value(f).map_err(|e| PyValueError::new_err(e.to_string()))?
+                } else {
+                    return Err(PyValueError::new_err(format!("Unsupported field '{}' on node '{}'", field, id)));
+                };
+                m.insert(Value::String(field), value);
             }
             nodes_map.insert(Value::String(id), Value::Mapping(m));
         }
         let mut top = Mapping::new();
         top.insert(Value::String("nodes".into()), Value::Mapping(nodes_map));
         top.insert(Value::String("root".into()), Value::String(root_id.into()));
-        serde_yaml::to_string(&Value::Mapping(top))
-            .map_err(|e| PyValueError::new_err(e.to_string()))
+        serde_yaml::to_string(&Value::Mapping(top)).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 }
 
