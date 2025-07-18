@@ -25,8 +25,14 @@ rows = [
 
 # Create and run sampler entirely in Rust
 s_yaml = g.freeze(mid)
-print(s_yaml)
 w_yaml = g.freeze(wmp)
-print(w_yaml)
 
-# Sampler demonstration removed; show YAML specs only
+## Call sampler to evaluate when trigger changes
+print("Trigger YAML:\n", s_yaml)
+print("Output YAML:\n", w_yaml)
+s = Sampler(trigger=s_yaml, output=[s_yaml, w_yaml])
+results = s.run(rows)
+
+print("Trigger changed values with outputs:")
+for r in results:
+    print(r)
