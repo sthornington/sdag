@@ -29,7 +29,7 @@ pub(crate) fn extract_node_spec(val: &Value) -> Result<Value, String> {
 }
 
 /// Extension trait tying a YAML `type` tag to its builder.
-pub trait NodeDef: Node + Sized {
+pub trait NodeDef: Sized {
     /// The `type` tag used in YAML to identify this node.
     const TYPE: &'static str;
     /// Parse an instance from its YAML mapping.
@@ -68,7 +68,7 @@ pub fn build_node(v: &Value) -> Result<Box<dyn Node + Send + Sync>, String> {
 
 /// Input node: reads a column by name.
 pub struct InputNodeImpl {
-    name: String,
+    pub name: String,
 }
 impl Node for InputNodeImpl {
     fn eval(&self, row: &HashMap<String, f64>) -> f64 {
@@ -92,7 +92,7 @@ impl NodeDef for InputNodeImpl {
 
 /// Const node: always returns a constant.
 pub struct ConstNode {
-    value: f64,
+    pub value: f64,
 }
 impl Node for ConstNode {
     fn eval(&self, _: &HashMap<String, f64>) -> f64 {
@@ -115,7 +115,7 @@ impl NodeDef for ConstNode {
 
 /// Add node: sums children.
 pub struct AddNode {
-    children: Vec<Box<dyn Node + Send + Sync>>,
+    pub children: Vec<Box<dyn Node + Send + Sync>>,
 }
 impl Node for AddNode {
     fn eval(&self, row: &HashMap<String, f64>) -> f64 {
@@ -142,7 +142,7 @@ impl NodeDef for AddNode {
 
 /// Mul node: multiplies children.
 pub struct MulNode {
-    children: Vec<Box<dyn Node + Send + Sync>>,
+    pub children: Vec<Box<dyn Node + Send + Sync>>,
 }
 impl Node for MulNode {
     fn eval(&self, row: &HashMap<String, f64>) -> f64 {
@@ -169,8 +169,8 @@ impl NodeDef for MulNode {
 
 /// Div node: left / right.
 pub struct DivNode {
-    left: Box<dyn Node + Send + Sync>,
-    right: Box<dyn Node + Send + Sync>,
+    pub left: Box<dyn Node + Send + Sync>,
+    pub right: Box<dyn Node + Send + Sync>,
 }
 impl Node for DivNode {
     fn eval(&self, row: &HashMap<String, f64>) -> f64 {
