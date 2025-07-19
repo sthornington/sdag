@@ -1,0 +1,38 @@
+nodes:
+  - name: Input
+    tag: input
+    fields:
+      name: String
+    eval: |
+      *inputs.get(&self.name).unwrap_or(&0.0)
+  
+  - name: Const
+    tag: const  
+    fields:
+      value: f64
+    eval: |
+      self.value
+      
+  - name: Add
+    tag: add
+    fields:
+      children: Vec<NodeId>
+    eval: |
+      self.children.iter().map(|&id| values[id]).sum()
+      
+  - name: Mul
+    tag: mul
+    fields:
+      children: Vec<NodeId>
+    eval: |
+      self.children.iter().map(|&id| values[id]).product()
+      
+  - name: Div
+    tag: div
+    fields:
+      left: NodeId
+      right: NodeId
+    eval: |
+      let l = values[self.left];
+      let r = values[self.right];
+      if r == 0.0 { f64::NAN } else { l / r }

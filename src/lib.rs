@@ -3,10 +3,7 @@ extern crate inventory;
 use pyo3::prelude::*;
 use std::collections::HashMap;
 
-// Re-export the py_node macro
-pub use py_node_macro::py_node;
-
-// Our simple macro system
+// Our simple macro system for traits
 #[macro_use]
 mod simple_node_macro;
 use simple_node_macro::{EvalNode, ArenaEval};
@@ -18,150 +15,13 @@ use engine::ArenaGraph;
 // Re-export for macro use
 pub use engine::NodeId;
 
+// Include the generated node definitions
+mod generated_nodes;
+use generated_nodes::{build_arena_node, register_nodes, freeze_node_fields};
 
 // ===========================================================================
-// MANUAL NODE DEFINITIONS - A simple approach
+// MAIN STRUCTURES
 // ===========================================================================
-
-// Input node
-#[derive(Debug, Clone)]
-pub struct InputNode {
-    pub name: String,
-}
-
-impl EvalNode for InputNode {
-    fn eval(&self, _values: &[f64], inputs: &HashMap<String, f64>) -> f64 {
-        *inputs.get(&self.name).unwrap_or(&0.0)
-    }
-}
-
-impl ArenaEval for InputNode {
-    fn eval_arena(&self, values: &[f64], inputs: &HashMap<String, f64>) -> f64 {
-        self.eval(values, inputs)
-    }
-}
-
-// Constant node
-#[derive(Debug, Clone)]
-pub struct ConstNode {
-    pub value: f64,
-}
-
-impl EvalNode for ConstNode {
-    fn eval(&self, _values: &[f64], _inputs: &HashMap<String, f64>) -> f64 {
-        self.value
-    }
-}
-
-impl ArenaEval for ConstNode {
-    fn eval_arena(&self, values: &[f64], inputs: &HashMap<String, f64>) -> f64 {
-        self.eval(values, inputs)
-    }
-}
-
-// Add node
-#[derive(Debug, Clone)]
-pub struct AddNode {
-    pub children: Vec<NodeId>,
-}
-
-impl EvalNode for AddNode {
-    fn eval(&self, values: &[f64], _inputs: &HashMap<String, f64>) -> f64 {
-        self.children.iter().map(|&id| values[id]).sum()
-    }
-}
-
-impl ArenaEval for AddNode {
-    fn eval_arena(&self, values: &[f64], inputs: &HashMap<String, f64>) -> f64 {
-        self.eval(values, inputs)
-    }
-}
-
-// Multiply node
-#[derive(Debug, Clone)]
-pub struct MulNode {
-    pub children: Vec<NodeId>,
-}
-
-impl EvalNode for MulNode {
-    fn eval(&self, values: &[f64], _inputs: &HashMap<String, f64>) -> f64 {
-        self.children.iter().map(|&id| values[id]).product()
-    }
-}
-
-impl ArenaEval for MulNode {
-    fn eval_arena(&self, values: &[f64], inputs: &HashMap<String, f64>) -> f64 {
-        self.eval(values, inputs)
-    }
-}
-
-// Divide node
-#[derive(Debug, Clone)]
-pub struct DivNode {
-    pub left: NodeId,
-    pub right: NodeId,
-}
-
-impl EvalNode for DivNode {
-    fn eval(&self, values: &[f64], _inputs: &HashMap<String, f64>) -> f64 {
-        let l = values[self.left];
-        let r = values[self.right];
-        if r == 0.0 { f64::NAN } else { l / r }
-    }
-}
-
-impl ArenaEval for DivNode {
-    fn eval_arena(&self, values: &[f64], inputs: &HashMap<String, f64>) -> f64 {
-        self.eval(values, inputs)
-    }
-}
-
-// ===========================================================================
-// PYTHON BINDINGS
-// ===========================================================================
-
-// Python wrapper classes
-#[pyclass]
-pub struct Input {
-    #[pyo3(get)]
-    pub id: String,
-    #[pyo3(get)]
-    pub name: String,
-}
-
-#[pyclass(name = "Const")]
-pub struct Const {
-    #[pyo3(get)]
-    pub id: String,
-    #[pyo3(get)]
-    pub value: f64,
-}
-
-#[pyclass]
-pub struct Add {
-    #[pyo3(get)]
-    pub id: String,
-    #[pyo3(get)]
-    pub children: Vec<PyObject>,
-}
-
-#[pyclass]
-pub struct Mul {
-    #[pyo3(get)]
-    pub id: String,
-    #[pyo3(get)]
-    pub children: Vec<PyObject>,
-}
-
-#[pyclass]
-pub struct Div {
-    #[pyo3(get)]
-    pub id: String,
-    #[pyo3(get)]
-    pub left: PyObject,
-    #[pyo3(get)]
-    pub right: PyObject,
-}
 
 /// Python Graph builder
 #[pyclass]
@@ -180,75 +40,32 @@ impl Graph {
         }
     }
     
-    fn input(&mut self, py: Python, name: String) -> PyObject {
-        let id = format!("n{}", self.counter);
-        self.counter += 1;
-        let node = Input { id: id.clone(), name };
-        let py_node = node.into_py(py);
-        self.registry.insert(id, py_node.clone());
-        py_node
-    }
-    
-    fn const_(&mut self, py: Python, value: f64) -> PyObject {
-        let id = format!("n{}", self.counter);
-        self.counter += 1;
-        let node = Const { id: id.clone(), value };
-        let py_node = node.into_py(py);
-        self.registry.insert(id, py_node.clone());
-        py_node
-    }
-    
-    fn add(&mut self, py: Python, children: Vec<PyObject>) -> PyObject {
-        let id = format!("n{}", self.counter);
-        self.counter += 1;
-        let node = Add { id: id.clone(), children };
-        let py_node = node.into_py(py);
-        self.registry.insert(id, py_node.clone());
-        py_node
-    }
-    
-    fn mul(&mut self, py: Python, children: Vec<PyObject>) -> PyObject {
-        let id = format!("n{}", self.counter);
-        self.counter += 1;
-        let node = Mul { id: id.clone(), children };
-        let py_node = node.into_py(py);
-        self.registry.insert(id, py_node.clone());
-        py_node
-    }
-    
-    fn div(&mut self, py: Python, left: PyObject, right: PyObject) -> PyObject {
-        let id = format!("n{}", self.counter);
-        self.counter += 1;
-        let node = Div { id: id.clone(), left, right };
-        let py_node = node.into_py(py);
-        self.registry.insert(id, py_node.clone());
-        py_node
-    }
-    
     fn freeze(&self, py: Python, root: PyObject) -> PyResult<String> {
         freeze_graph(self, py, root)
     }
 }
+
+// The Graph node creation methods are auto-generated and appended to this impl block by build.rs
+
+// The Graph methods are auto-generated in the included file
 
 /// Python Sampler
 #[pyclass]
 struct Sampler {
     graph: String,
     outputs: Vec<usize>,
-    engine_name: String,
 }
 
 #[pymethods]
 impl Sampler {
     #[new]
-    #[pyo3(signature = (graph, outputs, engine_name = "lazy"))]
-    fn new(graph: &str, outputs: Vec<usize>, engine_name: &str) -> PyResult<Self> {
+    #[pyo3(signature = (graph, outputs, _engine_name = "lazy"))]
+    fn new(graph: &str, outputs: Vec<usize>, _engine_name: &str) -> PyResult<Self> {
         ArenaGraph::from_yaml(graph)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
         Ok(Sampler { 
             graph: graph.to_string(), 
             outputs,
-            engine_name: engine_name.to_string(),
         })
     }
     
@@ -256,51 +73,11 @@ impl Sampler {
         let arena = ArenaGraph::from_yaml(&self.graph)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
         
-        // Build nodes manually based on tag
+        // Build nodes using auto-generated builder
         let mut nodes: Vec<Box<dyn ArenaEval>> = Vec::new();
         for arena_node in &arena.nodes {
-            let node: Box<dyn ArenaEval> = match arena_node.tag.as_str() {
-                "input" => {
-                    let name = match arena_node.fields.get("name") {
-                        Some(engine::FieldValue::Str(s)) => s.clone(),
-                        _ => return Err(pyo3::exceptions::PyValueError::new_err("input node missing name")),
-                    };
-                    Box::new(InputNode { name })
-                },
-                "const" => {
-                    let value = match arena_node.fields.get("value") {
-                        Some(engine::FieldValue::Float(f)) => *f,
-                        _ => return Err(pyo3::exceptions::PyValueError::new_err("const node missing value")),
-                    };
-                    Box::new(ConstNode { value })
-                },
-                "add" => {
-                    let children = match arena_node.fields.get("children") {
-                        Some(engine::FieldValue::Many(ids)) => ids.clone(),
-                        _ => return Err(pyo3::exceptions::PyValueError::new_err("add node missing children")),
-                    };
-                    Box::new(AddNode { children })
-                },
-                "mul" => {
-                    let children = match arena_node.fields.get("children") {
-                        Some(engine::FieldValue::Many(ids)) => ids.clone(),
-                        _ => return Err(pyo3::exceptions::PyValueError::new_err("mul node missing children")),
-                    };
-                    Box::new(MulNode { children })
-                },
-                "div" => {
-                    let left = match arena_node.fields.get("left") {
-                        Some(engine::FieldValue::One(id)) => *id,
-                        _ => return Err(pyo3::exceptions::PyValueError::new_err("div node missing left")),
-                    };
-                    let right = match arena_node.fields.get("right") {
-                        Some(engine::FieldValue::One(id)) => *id,
-                        _ => return Err(pyo3::exceptions::PyValueError::new_err("div node missing right")),
-                    };
-                    Box::new(DivNode { left, right })
-                },
-                _ => return Err(pyo3::exceptions::PyValueError::new_err(format!("Unknown node type: {}", arena_node.tag))),
-            };
+            let node = build_arena_node(arena_node)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
             nodes.push(node);
         }
         
@@ -338,11 +115,9 @@ impl Sampler {
 /// Python module
 #[pymodule]
 fn sdag(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_class::<Input>()?;
-    m.add_class::<Const>()?;
-    m.add_class::<Add>()?;
-    m.add_class::<Mul>()?;
-    m.add_class::<Div>()?;
+    // Register all nodes using auto-generated function
+    register_nodes(m)?;
+    
     m.add_class::<Graph>()?;
     m.add_class::<Sampler>()?;
     Ok(())
@@ -368,21 +143,25 @@ fn freeze_graph(graph: &Graph, py: Python, root: PyObject) -> PyResult<String> {
         if seen.contains(&id) { continue; }
         seen.push(id.clone());
         
-        let node_type = get_node_type(py, &obj)?;
-        match node_type.as_str() {
-            "Add" | "Mul" => {
-                let children: Vec<PyObject> = obj.as_ref(py).getattr("children")?.extract()?;
-                for child in children {
+        // Check if node has children
+        if let Ok(children) = obj.as_ref(py).getattr("children") {
+            if let Ok(children_vec) = children.extract::<Vec<PyObject>>() {
+                for child in children_vec {
                     stack.push(child);
                 }
-            },
-            "Div" => {
-                let left: PyObject = obj.as_ref(py).getattr("left")?.extract()?;
-                let right: PyObject = obj.as_ref(py).getattr("right")?.extract()?;
-                stack.push(left);
-                stack.push(right);
-            },
-            _ => {},
+            }
+        }
+        
+        // Check for left/right (binary nodes)
+        if let Ok(left) = obj.as_ref(py).getattr("left") {
+            if let Ok(left_obj) = left.extract::<PyObject>() {
+                stack.push(left_obj);
+            }
+        }
+        if let Ok(right) = obj.as_ref(py).getattr("right") {
+            if let Ok(right_obj) = right.extract::<PyObject>() {
+                stack.push(right_obj);
+            }
         }
     }
     
@@ -402,6 +181,7 @@ fn freeze_graph(graph: &Graph, py: Python, root: PyObject) -> PyResult<String> {
         let mut mapping = Mapping::new();
         mapping.insert(Value::String("id".into()), serde_yaml::to_value(id2idx[sid]).unwrap());
         
+        // Get node type (class name) and convert to tag
         let node_type = get_node_type(py, obj)?;
         let tag = match node_type.as_str() {
             "Input" => "input",
@@ -413,35 +193,8 @@ fn freeze_graph(graph: &Graph, py: Python, root: PyObject) -> PyResult<String> {
         };
         mapping.insert(Value::String("type".into()), Value::String(tag.to_string()));
         
-        // Add fields based on node type
-        match tag {
-            "input" => {
-                let name: String = obj.as_ref(py).getattr("name")?.extract()?;
-                mapping.insert(Value::String("name".into()), Value::String(name));
-            },
-            "const" => {
-                let value: f64 = obj.as_ref(py).getattr("value")?.extract()?;
-                mapping.insert(Value::String("value".into()), serde_yaml::to_value(value).unwrap());
-            },
-            "add" | "mul" => {
-                let children: Vec<PyObject> = obj.as_ref(py).getattr("children")?.extract()?;
-                let mut idxs = Vec::new();
-                for child in children {
-                    let cid: String = child.as_ref(py).getattr("id")?.extract()?;
-                    idxs.push(Value::Number(serde_yaml::Number::from(id2idx[&cid] as i64)));
-                }
-                mapping.insert(Value::String("children".into()), Value::Sequence(idxs));
-            },
-            "div" => {
-                let left: PyObject = obj.as_ref(py).getattr("left")?.extract()?;
-                let right: PyObject = obj.as_ref(py).getattr("right")?.extract()?;
-                let lid: String = left.as_ref(py).getattr("id")?.extract()?;
-                let rid: String = right.as_ref(py).getattr("id")?.extract()?;
-                mapping.insert(Value::String("left".into()), Value::Number(serde_yaml::Number::from(id2idx[&lid] as i64)));
-                mapping.insert(Value::String("right".into()), Value::Number(serde_yaml::Number::from(id2idx[&rid] as i64)));
-            },
-            _ => {},
-        }
+        // Extract fields using auto-generated helper
+        freeze_node_fields(py, obj, tag, &mut mapping, &id2idx)?;
         
         nodes_seq.push(Value::Mapping(mapping));
     }
