@@ -1,7 +1,9 @@
 #[macro_use]
 extern crate inventory;
+#[macro_use]
+mod node_macro;
 mod engine;
-use engine::{AddNode, ConstNode, DivNode, InputNodeImpl, MulNode, SamplerCore, extract_node_spec};
+use engine::{AddNode, ConstNode, DivNode, InputNodeImpl, MulNode};
 use engine::NodeDef;
 // procedural macro to generate Python node wrappers
 use py_node_macro::py_node;
@@ -22,7 +24,6 @@ fn sdag(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Div>()?;
     m.add_class::<Graph>()?;
     m.add_class::<Sampler>()?;
-    // m.add_function(wrap_pyfunction!(freeze, m)?)?; // freeze() moved to Phase 2
     Ok(())
 }
 
@@ -213,13 +214,25 @@ impl Graph {
                 let entry = if let Ok(seq) = val.cast_as::<PySequence>() {
                     let mut idxs = Vec::new();
                     for item in seq.iter()? {
-                        let cid: String = item?.extract()?;
+                        let child: PyObject = item?.extract()?;
+                        let cid: String = child.as_ref(py).getattr("id")?.extract()?;
                         idxs.push(Value::Number(serde_yaml::Number::from(id2idx[&cid] as i64)));
                     }
                     Value::Sequence(idxs)
                 } else if let Ok(child) = val.extract::<PyObject>() {
-                    let cid: String = child.as_ref(py).getattr("id")?.extract()?;
-                    Value::Number(serde_yaml::Number::from(id2idx[&cid] as i64))
+                    if child.as_ref(py).hasattr("id")? {
+                        let cid: String = child.as_ref(py).getattr("id")?.extract()?;
+                        Value::Number(serde_yaml::Number::from(id2idx[&cid] as i64))
+                    } else {
+                        // This is a non-node value, try to extract it directly
+                        if let Ok(s) = child.extract::<String>(py) {
+                            Value::String(s)
+                        } else if let Ok(f) = child.extract::<f64>(py) {
+                            serde_yaml::to_value(f).map_err(|e| PyValueError::new_err(e.to_string()))?
+                        } else {
+                            continue;
+                        }
+                    }
                 } else if let Ok(s) = val.extract::<String>() {
                     Value::String(s)
                 } else if let Ok(f) = val.extract::<f64>() {
@@ -250,25 +263,41 @@ impl Graph {
 struct Sampler {
     graph: String,
     outputs: Vec<usize>,
+    engine_name: String,
 }
 
 #[pymethods]
 impl Sampler {
     /// Construct from the frozen arena-graph YAML and list of output node IDs.
     #[new]
-    #[pyo3(signature = (graph, outputs))]
-    fn new(graph: &str, outputs: Vec<usize>) -> PyResult<Self> {
+    #[pyo3(signature = (graph, outputs, engine_name = "topological"))]
+    fn new(graph: &str, outputs: Vec<usize>, engine_name: &str) -> PyResult<Self> {
         // Validate syntax by parsing
         crate::engine::ArenaGraph::from_yaml(graph)
             .map_err(|e| PyValueError::new_err(e))?;
-        Ok(Sampler { graph: graph.to_string(), outputs })
+        // Validate engine name
+        match engine_name {
+            "topological" | "lazy" => {},
+            _ => return Err(PyValueError::new_err(format!("Unknown engine: {}", engine_name))),
+        }
+        Ok(Sampler { 
+            graph: graph.to_string(), 
+            outputs,
+            engine_name: engine_name.to_string(),
+        })
     }
 
     /// Run the sampler engine: a list of input rows to a list of output records.
     fn run(&self, rows: Vec<HashMap<String, f64>>) -> PyResult<Vec<HashMap<String, f64>>> {
         let arena = crate::engine::ArenaGraph::from_yaml(&self.graph)
             .map_err(|e| PyValueError::new_err(e))?;
-        let engine = crate::engine::ArenaEngine::new(self.outputs.clone());
+        
+        let engine: Box<dyn crate::engine::Engine> = match self.engine_name.as_str() {
+            "topological" => Box::new(crate::engine::ArenaEngine::new(self.outputs.clone())),
+            "lazy" => Box::new(crate::engine::LazyArenaEngine::new(self.outputs.clone())),
+            _ => unreachable!(), // Already validated in new()
+        };
+        
         Ok(engine.run(&arena, rows))
     }
 }

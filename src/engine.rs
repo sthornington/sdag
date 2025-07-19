@@ -1,10 +1,62 @@
 use serde_yaml::Value;
 use std::collections::HashMap;
+use once_cell::sync::Lazy;
+
+/// Builder entry for the node registry
+pub struct Builder {
+    pub tag: &'static str,
+    pub build: fn(&Value) -> Result<Box<dyn Node + Send + Sync>, String>,
+}
+
+inventory::collect!(Builder);
+
+/// Global registry of node builders
+static NODE_BUILDERS: Lazy<HashMap<&'static str, &'static Builder>> = Lazy::new(|| {
+    let mut map = HashMap::new();
+    for builder in inventory::iter::<Builder> {
+        map.insert(builder.tag, builder);
+    }
+    map
+});
+
+/// Build a node from YAML by looking up its type in the registry
+pub fn build_node(v: &Value) -> Result<Box<dyn Node + Send + Sync>, String> {
+    // If v is just a string ID, we need the full spec
+    if let Some(id) = v.as_str() {
+        return Err(format!("Cannot build node from ID '{}' - need full spec", id));
+    }
+    
+    let map = v.as_mapping()
+        .ok_or_else(|| "Node spec must be a mapping".to_string())?;
+    
+    let tag = map.get(&Value::String("type".into()))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Missing 'type' field in node spec".to_string())?;
+    
+    NODE_BUILDERS.get(tag)
+        .ok_or_else(|| format!("Unknown node type: {}", tag))
+        .and_then(|builder| (builder.build)(v))
+}
 
 /// Core evaluation trait: compute an f64 from one row of inputs.
 pub trait Node {
     fn eval(&self, row: &HashMap<String, f64>) -> f64;
 }
+
+/// Arena-based evaluation trait for nodes
+pub trait ArenaEvalNode {
+    fn eval(&self, values: &[f64]) -> f64;
+}
+
+/// Builder entry for node registry
+pub struct NodeBuilder {
+    pub tag: &'static str,
+    pub build: fn(&Value) -> Result<Box<dyn Node + Send + Sync>, String>,
+    pub build_arena: fn(&ArenaNode) -> Result<Box<dyn ArenaEvalNode>, String>,
+}
+
+inventory::collect!(NodeBuilder);
+
 
 /// Extract a single-node spec (mapping with 'type') or unpack a full-graph spec by root
 pub(crate) fn extract_node_spec(val: &Value) -> Result<Value, String> {
@@ -47,6 +99,11 @@ pub trait NodeDef: Sized {
     const TYPE: &'static str;
     /// Build the concrete engine node from its YAML mapping.
     fn from_yaml(v: &Value) -> Result<Box<dyn Node + Send + Sync>, String>;
+    /// Build arena node from spec
+    fn from_arena_spec(spec: &ArenaNode) -> Result<Box<dyn ArenaEvalNode>, String> {
+        // Default implementation returns error
+        Err("Arena spec not implemented for this node type".to_string())
+    }
 }
 
 /// ------------------------------------------------------------------
@@ -91,6 +148,9 @@ impl ArenaGraph {
 
 /// Trait for engines that run an arena graph over input rows.
 pub trait Engine {
+    /// Engine name
+    fn name(&self) -> &str;
+    
     /// Given the arena and input rows, produce output rows.
     fn run(&self, graph: &ArenaGraph, rows: Vec<HashMap<String, f64>>)
         -> Vec<HashMap<String, f64>>;
@@ -107,6 +167,10 @@ impl ArenaEngine {
     }
 }
 impl Engine for ArenaEngine {
+    fn name(&self) -> &str {
+        "topological"
+    }
+    
     fn run(&self, graph: &ArenaGraph, rows: Vec<HashMap<String, f64>>)
         -> Vec<HashMap<String, f64>>
     {
@@ -229,6 +293,90 @@ impl Node for DivNode {
         l / r
     }
 }
+/// Lazy evaluation engine - only evaluates needed nodes
+pub struct LazyArenaEngine {
+    pub outputs: Vec<NodeId>,
+}
+
+impl LazyArenaEngine {
+    pub fn new(outputs: Vec<NodeId>) -> Self {
+        Self { outputs }
+    }
+    
+    fn eval_node(&self, graph: &ArenaGraph, node_id: NodeId, values: &mut Vec<Option<f64>>, row: &HashMap<String, f64>) -> f64 {
+        if let Some(val) = values[node_id] {
+            return val;
+        }
+        
+        let node = &graph.nodes[node_id];
+        let result = match node.tag.as_str() {
+            "input" => {
+                if let FieldValue::Str(col) = &node.fields["name"] {
+                    *row.get(col).unwrap_or(&0.0)
+                } else { 0.0 }
+            }
+            "const" => {
+                if let FieldValue::Float(f) = node.fields["value"] {
+                    f
+                } else { 0.0 }
+            }
+            "add" => {
+                if let FieldValue::Many(ref children) = node.fields["children"] {
+                    children.iter().map(|&i| self.eval_node(graph, i, values, row)).sum()
+                } else { 0.0 }
+            }
+            "mul" => {
+                if let FieldValue::Many(ref children) = node.fields["children"] {
+                    children.iter().map(|&i| self.eval_node(graph, i, values, row)).product()
+                } else { 0.0 }
+            }
+            "div" => {
+                let l = if let FieldValue::One(i) = node.fields["left"] { 
+                    self.eval_node(graph, i, values, row)
+                } else { 0.0 };
+                let r = if let FieldValue::One(i) = node.fields["right"] { 
+                    self.eval_node(graph, i, values, row) 
+                } else { 1.0 };
+                l / r
+            }
+            other => panic!("Unknown node tag {}", other),
+        };
+        
+        values[node_id] = Some(result);
+        result
+    }
+}
+
+impl Engine for LazyArenaEngine {
+    fn name(&self) -> &str {
+        "lazy"
+    }
+    
+    fn run(&self, graph: &ArenaGraph, rows: Vec<HashMap<String, f64>>) -> Vec<HashMap<String, f64>> {
+        let mut results = Vec::new();
+        
+        for row in rows {
+            let mut values = vec![None; graph.nodes.len()];
+            
+            // Evaluate root
+            let root_val = self.eval_node(graph, graph.root, &mut values, &row);
+            
+            // Evaluate outputs
+            let mut rec = HashMap::new();
+            rec.insert("trigger".to_string(), root_val);
+            
+            for &out in &self.outputs {
+                let val = self.eval_node(graph, out, &mut values, &row);
+                rec.insert(format!("output{}", out), val);
+            }
+            
+            results.push(rec);
+        }
+        
+        results
+    }
+}
+
 pub struct SamplerCore {
     trigger: Box<dyn Node + Send + Sync>,
     outputs: Vec<Box<dyn Node + Send + Sync>>,
