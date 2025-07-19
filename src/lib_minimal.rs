@@ -1,5 +1,4 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, IntoPyDict};
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 
@@ -61,7 +60,8 @@ impl Graph {
         self.create_node(py, "input", [("name", name.to_object(py))].into_py_dict(py))
     }
     
-    fn r#const(&mut self, py: Python, value: f64) -> PyNode {
+    #[pyo3(name = "const")]
+    fn const_(&mut self, py: Python, value: f64) -> PyNode {
         self.create_node(py, "const", [("value", value.to_object(py))].into_py_dict(py))
     }
     
@@ -78,7 +78,7 @@ impl Graph {
         self.create_node(py, "div", data)
     }
     
-    fn create_node(&mut self, _py: Python, node_type: &str, data: &PyDict) -> PyNode {
+    fn create_node(&mut self, py: Python, node_type: &str, data: &PyDict) -> PyNode {
         let id = format!("n{}", self.next_id);
         self.next_id += 1;
         
@@ -95,7 +95,6 @@ impl Graph {
     fn freeze(&self, py: Python, root: PyNode) -> PyResult<String> {
         // Collect all nodes via traversal
         let mut seen = Vec::new();
-        let root_id = root.id.clone();
         let mut stack = vec![root];
         
         while let Some(node) = stack.pop() {
@@ -107,16 +106,16 @@ impl Graph {
             let data: &PyDict = node.data.as_ref(py).downcast()?;
             match node.node_type.as_str() {
                 "add" | "mul" => {
-                    if let Some(children) = data.get_item("children") {
+                    if let Ok(children) = data.get_item("children") {
                         let children: Vec<PyNode> = children.extract()?;
                         stack.extend(children);
                     }
                 }
                 "div" => {
-                    if let Some(left) = data.get_item("left") {
+                    if let Ok(left) = data.get_item("left") {
                         stack.push(left.extract()?);
                     }
-                    if let Some(right) = data.get_item("right") {
+                    if let Ok(right) = data.get_item("right") {
                         stack.push(right.extract()?);
                     }
                 }
@@ -130,7 +129,7 @@ impl Graph {
         seen.reverse();
         let mut id_map: HashMap<String, NodeId> = HashMap::new();
         let mut nodes = Vec::new();
-        let root_idx = seen.iter().position(|n| n.id == root_id).unwrap();
+        let root_idx = seen.iter().position(|n| n.id == root.id).unwrap();
         
         for (idx, py_node) in seen.iter().enumerate() {
             id_map.insert(py_node.id.clone(), idx);

@@ -1,257 +1,250 @@
-#[macro_use]
-extern crate inventory;
-
 use pyo3::prelude::*;
-use pyo3::types::PySequence;
+use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 
-#[macro_use]
-mod node_macro_v2;
-mod arena;
-mod engine_traits;
-mod engines;
-mod nodes_v2;
+// Re-export for the derive macro
+pub use sdag_derive::SdagNode;
 
-use arena::{Arena, ArenaGraph, ArenaNode, NodeId};
-use engine_traits::{Engine, NodeRegistry};
-use engines::{LazyEngine, TopologicalEngine};
+// ===========================================================================
+// CORE TYPES
+// ===========================================================================
 
-/// Python Graph builder
+pub type NodeId = usize;
+
+// The graph that builds and owns nodes
 #[pyclass]
-struct Graph {
-    counter: usize,
-    registry: HashMap<String, PyObject>,
+#[derive(Default)]
+pub struct Graph {
+    #[pyo3(get)]
+    pub nodes: Vec<PyObject>,  // Python objects for node access
+    arena: Vec<Box<dyn Node>>, // Actual computation nodes
 }
+
+// The serializable graph format
+#[derive(Serialize, Deserialize)]
+pub struct SerializedGraph {
+    pub nodes: Vec<SerializedNode>,
+    pub root: NodeId,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum SerializedNode {
+    #[serde(rename = "input")]
+    Input { name: String },
+    
+    #[serde(rename = "const")]
+    Const { value: f64 },
+    
+    #[serde(rename = "add")]
+    Add { children: Vec<NodeId> },
+    
+    #[serde(rename = "mul")]
+    Mul { children: Vec<NodeId> },
+    
+    #[serde(rename = "div")]
+    Div { left: NodeId, right: NodeId },
+}
+
+// ===========================================================================
+// NODE TRAIT
+// ===========================================================================
+
+pub trait Node: Send + Sync {
+    fn eval(&self, values: &[f64], inputs: &HashMap<String, f64>) -> f64;
+    fn as_serialized(&self) -> SerializedNode;
+}
+
+// ===========================================================================
+// NODE IMPLEMENTATIONS
+// ===========================================================================
+
+#[derive(Clone, SdagNode)]
+#[sdag(pyclass = "Input")]
+pub struct InputNode {
+    pub name: String,
+}
+
+impl Node for InputNode {
+    fn eval(&self, _values: &[f64], inputs: &HashMap<String, f64>) -> f64 {
+        *inputs.get(&self.name).unwrap_or(&0.0)
+    }
+    
+    fn as_serialized(&self) -> SerializedNode {
+        SerializedNode::Input { name: self.name.clone() }
+    }
+}
+
+#[derive(Clone, SdagNode)]
+#[sdag(pyclass = "Const")]
+pub struct ConstNode {
+    pub value: f64,
+}
+
+impl Node for ConstNode {
+    fn eval(&self, _values: &[f64], _inputs: &HashMap<String, f64>) -> f64 {
+        self.value
+    }
+    
+    fn as_serialized(&self) -> SerializedNode {
+        SerializedNode::Const { value: self.value }
+    }
+}
+
+#[derive(Clone, SdagNode)]
+#[sdag(pyclass = "Add")]
+pub struct AddNode {
+    pub children: Vec<NodeId>,
+}
+
+impl Node for AddNode {
+    fn eval(&self, values: &[f64], _inputs: &HashMap<String, f64>) -> f64 {
+        self.children.iter().map(|&id| values[id]).sum()
+    }
+    
+    fn as_serialized(&self) -> SerializedNode {
+        SerializedNode::Add { children: self.children.clone() }
+    }
+}
+
+#[derive(Clone, SdagNode)]
+#[sdag(pyclass = "Mul")]
+pub struct MulNode {
+    pub children: Vec<NodeId>,
+}
+
+impl Node for MulNode {
+    fn eval(&self, values: &[f64], _inputs: &HashMap<String, f64>) -> f64 {
+        self.children.iter().map(|&id| values[id]).product()
+    }
+    
+    fn as_serialized(&self) -> SerializedNode {
+        SerializedNode::Mul { children: self.children.clone() }
+    }
+}
+
+#[derive(Clone, SdagNode)]
+#[sdag(pyclass = "Div")]
+pub struct DivNode {
+    pub left: NodeId,
+    pub right: NodeId,
+}
+
+impl Node for DivNode {
+    fn eval(&self, values: &[f64], _inputs: &HashMap<String, f64>) -> f64 {
+        let l = values[self.left];
+        let r = values[self.right];
+        if r == 0.0 { f64::NAN } else { l / r }
+    }
+    
+    fn as_serialized(&self) -> SerializedNode {
+        SerializedNode::Div { left: self.left, right: self.right }
+    }
+}
+
+// ===========================================================================
+// GRAPH METHODS
+// ===========================================================================
 
 #[pymethods]
 impl Graph {
     #[new]
     fn new() -> Self {
-        Graph {
-            counter: 0,
-            registry: HashMap::new(),
-        }
-    }
-    
-    fn input(&mut self, py: Python, name: String) -> PyObject {
-        self.create_node(py, "input", vec![("name", name.into_py(py))])
-    }
-    
-    #[pyo3(name = "r#const")]
-    fn const_node(&mut self, py: Python, value: f64) -> PyObject {
-        self.create_node(py, "const", vec![("value", value.into_py(py))])
-    }
-    
-    fn add(&mut self, py: Python, children: Vec<PyObject>) -> PyObject {
-        self.create_node(py, "add", vec![("children", children.into_py(py))])
-    }
-    
-    fn mul(&mut self, py: Python, children: Vec<PyObject>) -> PyObject {
-        self.create_node(py, "mul", vec![("children", children.into_py(py))])
-    }
-    
-    fn div(&mut self, py: Python, left: PyObject, right: PyObject) -> PyObject {
-        self.create_node(py, "div", vec![("left", left), ("right", right)])
+        Self::default()
     }
     
     fn freeze(&self, py: Python, root: PyObject) -> PyResult<String> {
-        // Build arena graph from Python objects
-        let mut arena = Arena::<ArenaNode>::new();
-        let mut py_to_arena = HashMap::new();
+        // Get root ID
+        let root_id: usize = root.getattr(py, "id")?.extract(py)?;
         
-        // Discover all reachable nodes
-        let root_id: String = root.as_ref(py).getattr("id")?.extract()?;
-        let mut stack = vec![root.clone()];
-        let mut seen = std::collections::HashSet::new();
-        
-        while let Some(node) = stack.pop() {
-            let id: String = node.as_ref(py).getattr("id")?.extract()?;
-            if !seen.insert(id.clone()) {
-                continue;
-            }
-            
-            // Get node type and fields
-            let node_type: String = node.as_ref(py).get_type().getattr("TYPE")?.extract()?;
-            let fields: Vec<String> = node.as_ref(py).get_type().getattr("FIELDS")?.extract()?;
-            
-            // Build data map
-            let mut data = serde_yaml::Mapping::new();
-            
-            for field in fields {
-                let value = node.as_ref(py).getattr(field.as_str())?;
-                
-                let yaml_value = if let Ok(children) = value.cast_as::<PySequence>() {
-                    // Handle Vec<NodeId>
-                    let mut child_ids = Vec::new();
-                    for child in children.iter()? {
-                        let child_obj: PyObject = child?.extract()?;
-                        let child_id: String = child_obj.as_ref(py).getattr("id")?.extract()?;
-                        child_ids.push(serde_yaml::Value::String(child_id.clone()));
-                        stack.push(child_obj);
-                    }
-                    serde_yaml::Value::Sequence(child_ids)
-                } else if let Ok(child) = value.extract::<PyObject>() {
-                    if child.as_ref(py).hasattr("id")? {
-                        // Handle single NodeId
-                        let child_id: String = child.as_ref(py).getattr("id")?.extract()?;
-                        stack.push(child);
-                        serde_yaml::Value::String(child_id)
-                    } else {
-                        // Handle other types
-                        if let Ok(s) = value.extract::<String>() {
-                            serde_yaml::Value::String(s)
-                        } else if let Ok(f) = value.extract::<f64>() {
-                            serde_yaml::to_value(f).unwrap()
-                        } else {
-                            continue;
-                        }
-                    }
-                } else {
-                    continue;
-                };
-                
-                data.insert(serde_yaml::Value::String(field), yaml_value);
-            }
-            
-            // Insert into arena
-            let arena_id = arena.insert(
-                ArenaNode {
-                    id: 0, // Will be updated
-                    node_type,
-                    data: serde_yaml::Value::Mapping(data),
-                },
-                Some(id.clone()),
-            );
-            py_to_arena.insert(id, arena_id);
-        }
-        
-        // Update node IDs and references
-        let nodes: Vec<ArenaNode> = arena.nodes().iter().enumerate().map(|(i, node)| {
-            let mut updated = node.clone();
-            updated.id = i;
-            
-            // Update references in data
-            if let serde_yaml::Value::Mapping(ref mut map) = updated.data {
-                for (_key, value) in map.iter_mut() {
-                    match value {
-                        serde_yaml::Value::String(ref mut s) => {
-                            if let Some(&arena_id) = py_to_arena.get(s) {
-                                *value = serde_yaml::Value::Number(arena_id.into());
-                            }
-                        }
-                        serde_yaml::Value::Sequence(ref mut seq) => {
-                            for item in seq.iter_mut() {
-                                if let serde_yaml::Value::String(ref s) = item {
-                                    if let Some(&arena_id) = py_to_arena.get(s) {
-                                        *item = serde_yaml::Value::Number(arena_id.into());
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            
-            updated
-        }).collect();
-        
-        let root_arena_id = py_to_arena[&root_id];
-        
-        let graph = ArenaGraph {
-            nodes,
-            root: root_arena_id,
+        // Serialize nodes
+        let serialized = SerializedGraph {
+            nodes: self.arena.iter().map(|n| n.as_serialized()).collect(),
+            root: root_id,
         };
         
-        graph.to_yaml().map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
-    }
-    
-    // Helper to create nodes
-    fn create_node(&mut self, py: Python, node_type: &str, fields: Vec<(&str, PyObject)>) -> PyObject {
-        let id = format!("n{}", self.counter);
-        self.counter += 1;
-        
-        // Create a dynamic Python object
-        let node_class = match node_type {
-            "input" => py.get_type::<nodes_v2::InputNodePy>(),
-            "const" => py.get_type::<nodes_v2::ConstNodePy>(),
-            "add" => py.get_type::<nodes_v2::AddNodePy>(),
-            "mul" => py.get_type::<nodes_v2::MulNodePy>(),
-            "div" => py.get_type::<nodes_v2::DivNodePy>(),
-            _ => panic!("Unknown node type"),
-        };
-        
-        let mut args = vec![id.clone().into_py(py)];
-        for (_, value) in fields {
-            args.push(value);
-        }
-        
-        let node = node_class.call1(pyo3::types::PyTuple::new(py, args)).unwrap();
-        let py_node: PyObject = node.into();
-        
-        self.registry.insert(id, py_node.clone());
-        py_node
+        // Convert to YAML
+        serde_yaml::to_string(&serialized)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))
     }
 }
 
-/// Python Sampler
+// ===========================================================================
+// SAMPLER
+// ===========================================================================
+
 #[pyclass]
-struct Sampler {
-    graph_yaml: String,
+pub struct Sampler {
+    nodes: Vec<Box<dyn Node>>,
+    root: NodeId,
     outputs: Vec<NodeId>,
-    engine_name: String,
 }
 
 #[pymethods]
 impl Sampler {
     #[new]
-    #[pyo3(signature = (graph, outputs, engine = "topological"))]
-    fn new(graph: &str, outputs: Vec<usize>, engine: &str) -> PyResult<Self> {
-        // Validate graph
-        ArenaGraph::from_yaml(graph)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+    fn new(graph_yaml: &str, outputs: Vec<NodeId>, _engine: Option<&str>) -> PyResult<Self> {
+        // Deserialize graph
+        let graph: SerializedGraph = serde_yaml::from_str(graph_yaml)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
         
-        Ok(Sampler {
-            graph_yaml: graph.to_string(),
+        // Build nodes
+        let nodes: Vec<Box<dyn Node>> = graph.nodes.into_iter()
+            .map(|n| -> Box<dyn Node> {
+                match n {
+                    SerializedNode::Input { name } => Box::new(InputNode { name }),
+                    SerializedNode::Const { value } => Box::new(ConstNode { value }),
+                    SerializedNode::Add { children } => Box::new(AddNode { children }),
+                    SerializedNode::Mul { children } => Box::new(MulNode { children }),
+                    SerializedNode::Div { left, right } => Box::new(DivNode { left, right }),
+                }
+            })
+            .collect();
+        
+        Ok(Self {
+            nodes,
+            root: graph.root,
             outputs,
-            engine_name: engine.to_string(),
         })
     }
     
     fn run(&self, rows: Vec<HashMap<String, f64>>) -> PyResult<Vec<HashMap<String, f64>>> {
-        // Parse graph
-        let arena_graph = ArenaGraph::from_yaml(&self.graph_yaml)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        let mut results = Vec::new();
+        let mut prev_trigger: Option<f64> = None;
         
-        // Build nodes
-        let mut registry = NodeRegistry::new();
-        nodes_v2::register_all_nodes(&mut registry);
-        
-        let mut nodes = Vec::new();
-        for arena_node in &arena_graph.nodes {
-            let node = registry.build(arena_node)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
-            nodes.push(node);
+        for inputs in rows {
+            // Evaluate all nodes in order (topological sort assumed)
+            let mut values = vec![0.0; self.nodes.len()];
+            for (i, node) in self.nodes.iter().enumerate() {
+                values[i] = node.eval(&values, &inputs);
+            }
+            
+            // Check trigger
+            let trigger = values[self.root];
+            if prev_trigger.map_or(true, |p| p != trigger) {
+                let mut record = HashMap::new();
+                record.insert("trigger".to_string(), trigger);
+                
+                for (i, &output_id) in self.outputs.iter().enumerate() {
+                    record.insert(format!("output{}", i), values[output_id]);
+                }
+                
+                results.push(record);
+                prev_trigger = Some(trigger);
+            }
         }
         
-        // Select engine
-        let engine: Box<dyn Engine> = match self.engine_name.as_str() {
-            "topological" => Box::new(TopologicalEngine),
-            "lazy" => Box::new(LazyEngine),
-            _ => return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("Unknown engine: {}", self.engine_name)
-            )),
-        };
-        
-        // Run evaluation
-        Ok(engine.evaluate(&nodes, arena_graph.root, &self.outputs, rows))
+        Ok(results)
     }
 }
 
-/// Python module
+// ===========================================================================
+// MODULE
+// ===========================================================================
+
 #[pymodule]
-fn sdag(py: Python, m: &PyModule) -> PyResult<()> {
-    nodes_v2::register_all_python(m)?;
+fn sdag(_py: Python, m: &PyModule) -> PyResult<()> {
+    // The derive macro registers node classes automatically via inventory
     m.add_class::<Graph>()?;
     m.add_class::<Sampler>()?;
     Ok(())

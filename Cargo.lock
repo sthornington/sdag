@@ -275,8 +275,18 @@ dependencies = [
  "py_node_macro",
  "pyo3",
  "pyo3-build-config",
+ "sdag_derive",
  "serde",
  "serde_yaml",
+]
+
+[[package]]
+name = "sdag_derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.104",
 ]
 
 [[package]]
