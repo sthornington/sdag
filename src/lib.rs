@@ -1,7 +1,5 @@
 #[macro_use]
 extern crate inventory;
-#[macro_use]
-mod node_macro;
 mod engine;
 use engine::{AddNode, ConstNode, DivNode, InputNodeImpl, MulNode};
 use engine::NodeDef;
@@ -211,11 +209,11 @@ impl Graph {
             let fields: Vec<String> = obj.as_ref(py).get_type().getattr("FIELDS")?.extract()?;
             for field in fields {
                 let val = obj.as_ref(py).getattr(field.as_str())?;
-                let entry = if let Ok(seq) = val.cast_as::<PySequence>() {
+                let entry = if let Ok(list) = val.downcast::<pyo3::types::PyList>() {
                     let mut idxs = Vec::new();
-                    for item in seq.iter()? {
-                        let child: PyObject = item?.extract()?;
-                        let cid: String = child.as_ref(py).getattr("id")?.extract()?;
+                    for item in list.iter() {
+                        let child = item;
+                        let cid: String = child.getattr("id")?.extract()?;
                         idxs.push(Value::Number(serde_yaml::Number::from(id2idx[&cid] as i64)));
                     }
                     Value::Sequence(idxs)

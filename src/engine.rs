@@ -175,6 +175,8 @@ impl Engine for ArenaEngine {
         -> Vec<HashMap<String, f64>>
     {
         let mut results = Vec::new();
+        let mut prev_trigger: Option<f64> = None;
+        
         for row in rows {
             // Topologically evaluate by arena order
             let mut vals = vec![0.0; graph.nodes.len()];
@@ -209,13 +211,19 @@ impl Engine for ArenaEngine {
                 };
                 vals[node.id] = v;
             }
-            // Build output record: include trigger and outputs
-            let mut rec = HashMap::new();
-            rec.insert("trigger".to_string(), vals[graph.root]);
-            for &out in &self.outputs {
-                rec.insert(format!("output{}", out), vals[out]);
+            
+            // Only output if trigger changed
+            let trigger_val = vals[graph.root];
+            if prev_trigger.map_or(true, |p| p != trigger_val) {
+                // Build output record: include trigger and outputs
+                let mut rec = HashMap::new();
+                rec.insert("trigger".to_string(), trigger_val);
+                for (i, &out) in self.outputs.iter().enumerate() {
+                    rec.insert(format!("output{}", i), vals[out]);
+                }
+                results.push(rec);
+                prev_trigger = Some(trigger_val);
             }
-            results.push(rec);
         }
         results
     }
@@ -354,23 +362,28 @@ impl Engine for LazyArenaEngine {
     
     fn run(&self, graph: &ArenaGraph, rows: Vec<HashMap<String, f64>>) -> Vec<HashMap<String, f64>> {
         let mut results = Vec::new();
+        let mut prev_trigger: Option<f64> = None;
         
         for row in rows {
             let mut values = vec![None; graph.nodes.len()];
             
-            // Evaluate root
-            let root_val = self.eval_node(graph, graph.root, &mut values, &row);
+            // Evaluate root (trigger)
+            let trigger_val = self.eval_node(graph, graph.root, &mut values, &row);
             
-            // Evaluate outputs
-            let mut rec = HashMap::new();
-            rec.insert("trigger".to_string(), root_val);
-            
-            for &out in &self.outputs {
-                let val = self.eval_node(graph, out, &mut values, &row);
-                rec.insert(format!("output{}", out), val);
+            // Only output if trigger changed
+            if prev_trigger.map_or(true, |p| p != trigger_val) {
+                // Evaluate outputs
+                let mut rec = HashMap::new();
+                rec.insert("trigger".to_string(), trigger_val);
+                
+                for (i, &out) in self.outputs.iter().enumerate() {
+                    let val = self.eval_node(graph, out, &mut values, &row);
+                    rec.insert(format!("output{}", i), val);
+                }
+                
+                results.push(rec);
+                prev_trigger = Some(trigger_val);
             }
-            
-            results.push(rec);
         }
         
         results
