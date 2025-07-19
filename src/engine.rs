@@ -295,6 +295,22 @@ pub fn from_yaml(yaml_str: &str) -> Result<Engine> {
                 
                 NodeOp::Comparison { a: *a, b: *b, op }
             }
+            "Sum" => {
+                let inputs = node.params.get("inputs")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| DagError::InvalidInput("Sum requires 'inputs' array".into()))?;
+                
+                let input_indices: Result<Vec<_>> = inputs.iter()
+                    .map(|input| {
+                        input.as_str()
+                            .and_then(|s| id_map.get(s))
+                            .copied()
+                            .ok_or_else(|| DagError::NodeNotFound(input.to_string()).into())
+                    })
+                    .collect();
+                
+                NodeOp::Sum { inputs: input_indices? }
+            }
             _ => return Err(DagError::InvalidInput(format!("Unknown node type: {}", node.node_type)).into()),
         };
         nodes.push(op);

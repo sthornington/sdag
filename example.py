@@ -1,143 +1,144 @@
 #!/usr/bin/env python3
 """
-Example of using the high-performance streaming DAG from Python.
+Examples of using the high-performance streaming DAG from Python.
 
-This demonstrates:
-1. Loading a DAG from YAML
-2. Building a DAG programmatically
-3. Streaming row-by-row evaluation with trigger-based outputs
+This demonstrates two approaches:
+1. Object-oriented API - Build DAGs using Python objects (type-safe, recommended)
+2. Direct YAML loading - Load pre-built DAGs from YAML files
 """
 
 import sdag
 import random
 
-def example_yaml_loading():
-    """Load and run the streaming example DAG from YAML"""
-    print("=== YAML Loading Example ===")
+def example_object_oriented_api():
+    """Build a DAG using the object-oriented API (recommended)"""
+    print("=== Object-Oriented API Example ===")
     
-    # Load the DAG from YAML file
-    engine = sdag.PyEngine.from_yaml_file("streaming_example.yaml")
+    # Create a graph
+    graph = sdag.Graph()
     
-    # Simulate streaming price data
+    # Create nodes - no string references!
+    price_a = sdag.InputNode(0)
+    price_b = sdag.InputNode(1)
+    threshold = sdag.ConstantNode(100.0)
+    
+    # Compose operations using actual objects
+    total = sdag.AddNode(price_a, price_b)
+    alert = sdag.ComparisonNode(total, threshold, "GreaterThan")
+    
+    # Additional calculation
+    multiplier = sdag.ConstantNode(1.5)
+    adjusted = sdag.MultiplyNode(total, multiplier)
+    
+    # Add all nodes to graph
+    for node in [price_a, price_b, threshold, total, alert, multiplier, adjusted]:
+        graph.add_node(node)
+    
+    # Configure trigger and outputs
+    graph.set_trigger(alert)
+    graph.add_output(total)
+    graph.add_output(adjusted)
+    
+    # Build engine
+    engine = graph.build_engine()
+    
+    # Stream data
     print("\nStreaming price data...")
-    for i in range(10):
-        price_a = 40.0 + random.uniform(-5, 5)
-        price_b = 45.0 + random.uniform(-5, 5)
+    for i in range(5):
+        a = 40.0 + random.uniform(-5, 5)
+        b = 45.0 + random.uniform(-5, 5)
         
-        # Evaluate one step
-        outputs = engine.evaluate_step([price_a, price_b])
-        
-        print(f"Row {i}: price_a={price_a:.2f}, price_b={price_b:.2f}")
+        outputs = engine.evaluate_step([a, b])
+        print(f"Row {i}: price_a={a:.2f}, price_b={b:.2f}")
         
         if outputs is not None:
-            print(f"  -> TRIGGER FIRED! sum={outputs[0]:.2f}, adjusted={outputs[1]:.2f}")
+            print(f"  -> ALERT! total={outputs[0]:.2f}, adjusted={outputs[1]:.2f}")
         else:
-            print(f"  -> No trigger (sum < 100)")
+            print(f"  -> No alert (sum < 100)")
 
-def example_programmatic_dag():
-    """Build a DAG programmatically"""
-    print("\n=== Programmatic DAG Example ===")
+def example_yaml_loading():
+    """Load and run a DAG from YAML"""
+    print("\n=== YAML Loading Example ===")
     
-    # Build a simple DAG: trigger when (a * b) > 50
-    builder = sdag.PyDagBuilder()
+    # Load from YAML file
+    engine = sdag.PyEngine.from_yaml_file("streaming_example.yaml")
     
-    # Add input nodes
-    builder.add_input("a", 0)
-    builder.add_input("b", 1)
-    
-    # Add computation nodes
-    builder.add_multiply("product", "a", "b")
-    builder.add_constant("threshold", 50.0)
-    builder.add_comparison("trigger", "product", "threshold", "GreaterThan")
-    
-    # Set trigger and outputs
-    builder.set_trigger("trigger")
-    builder.set_outputs(["product"])
-    
-    # Build the engine
-    engine = builder.build()
-    
-    # Test with some values
-    print("\nTesting trigger when a * b > 50:")
+    # Process some data
+    print("\nProcessing with YAML-loaded DAG:")
     test_cases = [
-        (5.0, 8.0),   # 40, no trigger
-        (6.0, 9.0),   # 54, trigger!
-        (7.0, 7.0),   # 49, no trigger
-        (8.0, 8.0),   # 64, trigger!
+        (45.0, 45.0),  # 90 < 100
+        (55.0, 55.0),  # 110 > 100
+        (40.0, 40.0),  # 80 < 100
     ]
     
     for a, b in test_cases:
         outputs = engine.evaluate_step([a, b])
-        product = a * b
-        print(f"  a={a}, b={b}, product={product}")
-        if outputs is not None:
-            print(f"    -> TRIGGER FIRED! Output: {outputs[0]}")
+        print(f"Input: ({a}, {b})")
+        if outputs:
+            print(f"  -> Triggered! Outputs: {outputs}")
         else:
-            print(f"    -> No trigger")
+            print(f"  -> No trigger")
 
-def example_streaming_batch():
-    """Process a batch of streaming data"""
-    print("\n=== Batch Streaming Example ===")
+def example_save_to_yaml():
+    """Build a DAG with objects and save to YAML"""
+    print("\n=== Save to YAML Example ===")
     
-    # Create a simple threshold DAG
-    builder = sdag.PyDagBuilder()
-    builder.add_input("value", 0)
-    builder.add_constant("threshold", 10.0)
-    builder.add_comparison("above_threshold", "value", "threshold", "GreaterThan")
-    builder.set_trigger("above_threshold")
-    builder.set_outputs(["value"])
+    graph = sdag.Graph()
     
-    engine = builder.build()
+    # Build a simple monitoring DAG
+    sensor1 = sdag.InputNode(0)
+    sensor2 = sdag.InputNode(1)
+    sensor3 = sdag.InputNode(2)
     
-    # Generate streaming data
-    streaming_data = [
-        [5.0],   # Below threshold
-        [8.0],   # Below threshold
-        [12.0],  # Above threshold!
-        [15.0],  # Above threshold!
-        [9.0],   # Below threshold
-        [11.0],  # Above threshold!
-    ]
+    # Average the sensors
+    total = sdag.SumNode([sensor1, sensor2, sensor3])
+    count = sdag.ConstantNode(3.0)
+    average = sdag.MultiplyNode(total, sdag.ConstantNode(1.0/3.0))
     
-    # Process the stream
-    outputs = engine.stream(streaming_data)
+    # Alert if average > threshold
+    threshold = sdag.ConstantNode(25.0)
+    alert = sdag.ComparisonNode(average, threshold, "GreaterThan")
     
-    print(f"Processed {len(streaming_data)} rows")
-    print(f"Trigger fired {len(outputs)} times:")
-    for i, output in enumerate(outputs):
-        print(f"  Output {i}: {output}")
-
-def example_yaml_inspection():
-    """Show how to inspect and save DAG structure"""
-    print("\n=== DAG YAML Inspection ===")
+    # Add nodes
+    nodes = [sensor1, sensor2, sensor3, total, count, average, 
+             sdag.ConstantNode(1.0/3.0), threshold, alert]
+    for node in nodes:
+        graph.add_node(node)
     
-    # Build a DAG
-    builder = sdag.PyDagBuilder()
-    builder.add_input("x", 0)
-    builder.add_input("y", 1)
-    builder.add_add("sum", "x", "y")
-    builder.add_constant("factor", 2.0)
-    builder.add_multiply("result", "sum", "factor")
-    builder.set_trigger("sum")
-    builder.set_outputs(["result"])
+    graph.set_trigger(alert)
+    graph.add_output(average)
     
-    # Get YAML representation
-    yaml_str = builder.to_yaml()
+    # Save to YAML
+    yaml_str = graph.to_yaml()
     print("Generated YAML:")
     print(yaml_str)
     
-    # You could save this to a file for pure Rust execution
-    with open("generated_dag.yaml", "w") as f:
+    with open("sensor_monitor.yaml", "w") as f:
         f.write(yaml_str)
-    print("\nSaved to generated_dag.yaml")
+    print("\nSaved to sensor_monitor.yaml")
+
+def example_type_safety():
+    """Demonstrate type safety benefits of object API"""
+    print("\n=== Type Safety Benefits ===")
+    
+    # With objects, errors are caught immediately:
+    input1 = sdag.InputNode(0)
+    input2 = sdag.InputNode(1)
+    
+    # This works - proper objects
+    sum_node = sdag.AddNode(input1, input2)
+    print(f"✓ Created sum node: {sum_node.node_id}")
+    
+    # This would fail at Python level (uncomment to see):
+    # bad_node = sdag.AddNode(input1, "input2")  # TypeError!
+    
+    # With string-based builders, errors only show at runtime:
+    # builder.add_add("sum", "inpt1", "input2")  # Typo undetected until execution!
+    
+    print("✓ Object API prevents typos and type errors at construction time")
 
 if __name__ == "__main__":
-    # Run all examples
+    example_object_oriented_api()
     example_yaml_loading()
-    example_programmatic_dag()
-    example_streaming_batch()
-    example_yaml_inspection()
-    
-    print("\n=== Running DAG from CLI ===")
-    # Demonstrate CLI functionality
-    sdag.run_dag_cli(["streaming_example.yaml", "55.0", "60.0"])
+    example_save_to_yaml()
+    example_type_safety()
