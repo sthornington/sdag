@@ -245,34 +245,31 @@ impl Graph {
 }
 
 /// Python Sampler wrapper (delegates to core engine).
+/// Python sampler for arena graphs using the new ArenaEngine.
 #[pyclass]
 struct Sampler {
-    core: SamplerCore,
+    graph: String,
+    outputs: Vec<usize>,
 }
+
 #[pymethods]
 impl Sampler {
+    /// Construct from the frozen arena-graph YAML and list of output node IDs.
     #[new]
-    #[pyo3(signature = (trigger, output))]
-    fn new(trigger: &str, output: Vec<&str>) -> PyResult<Self> {
-        // Normalize YAML specs: accept full graph spec or single-node spec and convert to single-node YAML
-        fn normalize_spec(yml: &str) -> PyResult<String> {
-            let val: Value = serde_yaml::from_str(yml).map_err(|e| PyValueError::new_err(e.to_string()))?;
-            let spec = extract_node_spec(&val).map_err(|e| PyValueError::new_err(e))?;
-            let s = serde_yaml::to_string(&spec).map_err(|e| PyValueError::new_err(e.to_string()))?;
-            Ok(s.trim_end_matches('\n').to_string())
-        }
-        let trigger_spec = normalize_spec(trigger)?;
-        let mut out_specs = Vec::with_capacity(output.len());
-        for &o in &output {
-            out_specs.push(normalize_spec(o)?);
-        }
-        let out_refs: Vec<&str> = out_specs.iter().map(|s| s.as_str()).collect();
-        let core = SamplerCore::new(&trigger_spec, &out_refs).map_err(|e| PyValueError::new_err(e))?;
-        Ok(Sampler { core })
+    #[pyo3(signature = (graph, outputs))]
+    fn new(graph: &str, outputs: Vec<usize>) -> PyResult<Self> {
+        // Validate syntax by parsing
+        crate::engine::ArenaGraph::from_yaml(graph)
+            .map_err(|e| PyValueError::new_err(e))?;
+        Ok(Sampler { graph: graph.to_string(), outputs })
     }
 
+    /// Run the sampler engine: a list of input rows to a list of output records.
     fn run(&self, rows: Vec<HashMap<String, f64>>) -> PyResult<Vec<HashMap<String, f64>>> {
-        Ok(self.core.run(rows))
+        let arena = crate::engine::ArenaGraph::from_yaml(&self.graph)
+            .map_err(|e| PyValueError::new_err(e))?;
+        let engine = crate::engine::ArenaEngine::new(self.outputs.clone());
+        Ok(engine.run(&arena, rows))
     }
 }
 
