@@ -19,7 +19,7 @@ macro_rules! define_simple_node {
             
             // 2. Python wrapper - automatically generated
             #[py_node([<$name Node>]::TYPE, $($field),*)]
-            #[pyclass(name = stringify!($name))]
+            #[pyclass]
             pub struct $name {
                 #[pyo3(get)]
                 pub id: String,
@@ -30,25 +30,28 @@ macro_rules! define_simple_node {
             }
             
             // 3. Graph builder method - automatically added
+            // Use a custom method name based on the tag to avoid keyword conflicts
             impl crate::Graph {
-                pub fn [<$name:snake>](&mut self, py: pyo3::Python, $($field: define_simple_node!(@py_type $field_ty)),*) -> pyo3::PyObject {
-                    use pyo3::IntoPy;
-                    let id = format!("n{}", self.counter);
-                    self.counter += 1;
-                    let node = $name { 
-                        id: id.clone(), 
-                        $($field),* 
-                    };
-                    let py_node = node.into_py(py);
-                    self.registry.insert(id, py_node.clone());
-                    py_node
+                paste::paste! {
+                    pub fn [< create_ $tag:snake >](&mut self, py: pyo3::Python, $($field: define_simple_node!(@py_type $field_ty)),*) -> pyo3::PyObject {
+                        use pyo3::IntoPy;
+                        let id = format!("n{}", self.counter);
+                        self.counter += 1;
+                        let node = $name { 
+                            id: id.clone(), 
+                            $($field),* 
+                        };
+                        let py_node = node.into_py(py);
+                        self.registry.insert(id, py_node.clone());
+                        py_node
+                    }
                 }
             }
             
             // 4. Auto-register with Python module
             inventory::submit! {
-                crate::NodeRegistration {
-                    name: stringify!($name),
+                crate::simple_node_macro::NodeRegistration {
+                    name: $tag,
                     register: |m: &pyo3::types::PyModule| -> pyo3::PyResult<()> {
                         m.add_class::<$name>()?;
                         Ok(())
@@ -57,19 +60,19 @@ macro_rules! define_simple_node {
             }
             
             // 5. Arena evaluation - users just implement EvalNode trait
-            impl crate::ArenaEval for [<$name Node>] {
-                fn eval_arena(&self, values: &[f64], inputs: &HashMap<String, f64>) -> f64 {
-                    <Self as crate::EvalNode>::eval(self, values, inputs)
+            impl crate::simple_node_macro::ArenaEval for [<$name Node>] {
+                fn eval_arena(&self, values: &[f64], inputs: &std::collections::HashMap<String, f64>) -> f64 {
+                    <Self as crate::simple_node_macro::EvalNode>::eval(self, values, inputs)
                 }
             }
             
             // 6. Auto-register arena builder
             inventory::submit! {
-                crate::ArenaNodeBuilder {
+                crate::simple_node_macro::ArenaNodeBuilder {
                     tag: $tag,
-                    build: |node: &crate::engine::ArenaNode| -> Result<Box<dyn crate::ArenaEval>, String> {
-                        // Extract fields from arena node
-                        $(let $field = define_simple_node!(@extract_field node, stringify!($field), $field_ty)?;)*
+                    build: |node: &crate::engine::ArenaNode| -> Result<Box<dyn crate::simple_node_macro::ArenaEval>, String> {
+                        // Extract fields from arena node using helper function
+                        $(let $field = crate::simple_node_macro::extract_field(node, stringify!($field), stringify!($field_ty))?;)*
                         
                         Ok(Box::new([<$name Node>] {
                             $($field,)*
@@ -81,45 +84,68 @@ macro_rules! define_simple_node {
     };
     
     // Type conversions
-    (@py_type crate::NodeId) => { pyo3::PyObject };
-    (@py_type Vec<crate::NodeId>) => { Vec<pyo3::PyObject> };
+    (@py_type NodeId) => { pyo3::PyObject };
+    (@py_type Vec<NodeId>) => { Vec<pyo3::PyObject> };
     (@py_type $t:ty) => { $t };
-    
-    // Field extraction from arena
-    (@extract_field $node:expr, $field:expr, crate::NodeId) => {
-        match $node.fields.get($field) {
+}
+
+// Helper function to extract fields based on string type
+pub fn extract_field<T>(node: &crate::engine::ArenaNode, field_name: &str, field_type: &str) -> Result<T, String> 
+where T: ExtractField {
+    T::extract(node, field_name, field_type)
+}
+
+// Trait for extractable field types
+pub trait ExtractField: Sized {
+    fn extract(node: &crate::engine::ArenaNode, field_name: &str, field_type: &str) -> Result<Self, String>;
+}
+
+use crate::engine::NodeId;
+
+impl ExtractField for NodeId {
+    fn extract(node: &crate::engine::ArenaNode, field_name: &str, _field_type: &str) -> Result<Self, String> {
+        match node.fields.get(field_name) {
             Some(crate::engine::FieldValue::One(id)) => Ok(*id),
-            _ => Err(format!("Expected NodeId for field {}", $field)),
+            _ => Err(format!("Expected NodeId for field {}", field_name)),
         }
-    };
-    (@extract_field $node:expr, $field:expr, Vec<crate::NodeId>) => {
-        match $node.fields.get($field) {
+    }
+}
+
+impl ExtractField for Vec<NodeId> {
+    fn extract(node: &crate::engine::ArenaNode, field_name: &str, _field_type: &str) -> Result<Self, String> {
+        match node.fields.get(field_name) {
             Some(crate::engine::FieldValue::Many(ids)) => Ok(ids.clone()),
-            _ => Err(format!("Expected Vec<NodeId> for field {}", $field)),
+            _ => Err(format!("Expected Vec<NodeId> for field {}", field_name)),
         }
-    };
-    (@extract_field $node:expr, $field:expr, f64) => {
-        match $node.fields.get($field) {
+    }
+}
+
+impl ExtractField for f64 {
+    fn extract(node: &crate::engine::ArenaNode, field_name: &str, _field_type: &str) -> Result<Self, String> {
+        match node.fields.get(field_name) {
             Some(crate::engine::FieldValue::Float(f)) => Ok(*f),
-            _ => Err(format!("Expected f64 for field {}", $field)),
+            _ => Err(format!("Expected f64 for field {}", field_name)),
         }
-    };
-    (@extract_field $node:expr, $field:expr, String) => {
-        match $node.fields.get($field) {
+    }
+}
+
+impl ExtractField for String {
+    fn extract(node: &crate::engine::ArenaNode, field_name: &str, _field_type: &str) -> Result<Self, String> {
+        match node.fields.get(field_name) {
             Some(crate::engine::FieldValue::Str(s)) => Ok(s.clone()),
-            _ => Err(format!("Expected String for field {}", $field)),
+            _ => Err(format!("Expected String for field {}", field_name)),
         }
-    };
+    }
 }
 
 // The ONLY trait users need to implement
 pub trait EvalNode {
-    fn eval(&self, values: &[f64], inputs: &HashMap<String, f64>) -> f64;
+    fn eval(&self, values: &[f64], inputs: &std::collections::HashMap<String, f64>) -> f64;
 }
 
 // Internal trait for arena evaluation
 pub trait ArenaEval: Send + Sync {
-    fn eval_arena(&self, values: &[f64], inputs: &HashMap<String, f64>) -> f64;
+    fn eval_arena(&self, values: &[f64], inputs: &std::collections::HashMap<String, f64>) -> f64;
 }
 
 // Node registration for Python

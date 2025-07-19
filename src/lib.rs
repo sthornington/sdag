@@ -1,88 +1,175 @@
-#[macro_use]
 extern crate inventory;
-mod engine;
-use engine::{AddNode, ConstNode, DivNode, InputNodeImpl, MulNode};
-use engine::NodeDef;
-// procedural macro to generate Python node wrappers
-use py_node_macro::py_node;
-use pyo3::exceptions::PyValueError;
+
 use pyo3::prelude::*;
-use pyo3::types::PySequence;
-// pyo3::wrap_pyfunction no longer used
-use serde_yaml::{Mapping, Value};
 use std::collections::HashMap;
 
-/// Python bindings and top-level module definitions.
-#[pymodule]
-fn sdag(py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_class::<InputNode>()?;
-    m.add_class::<Const>()?;
-    m.add_class::<Add>()?;
-    m.add_class::<Mul>()?;
-    m.add_class::<Div>()?;
-    m.add_class::<Graph>()?;
-    m.add_class::<Sampler>()?;
-    Ok(())
+// Re-export the py_node macro
+pub use py_node_macro::py_node;
+
+// Our simple macro system
+#[macro_use]
+mod simple_node_macro;
+use simple_node_macro::{EvalNode, ArenaEval};
+
+// Engine module with arena types
+mod engine;
+use engine::ArenaGraph;
+
+// Re-export for macro use
+pub use engine::NodeId;
+
+
+// ===========================================================================
+// MANUAL NODE DEFINITIONS - A simple approach
+// ===========================================================================
+
+// Input node
+#[derive(Debug, Clone)]
+pub struct InputNode {
+    pub name: String,
 }
 
-/// Python InputNode wrapper (ID node with scalar name).
-#[py_node(InputNodeImpl::TYPE, name)]
-#[pyclass(name = "InputNode", text_signature = "(id, name)")]
-struct InputNode {
-    #[pyo3(get)]
-    id: String,
-    #[pyo3(get)]
-    name: String,
+impl EvalNode for InputNode {
+    fn eval(&self, _values: &[f64], inputs: &HashMap<String, f64>) -> f64 {
+        *inputs.get(&self.name).unwrap_or(&0.0)
+    }
 }
 
-/// Python Const wrapper (ID node with scalar value).
-#[py_node(ConstNode::TYPE, value)]
-#[pyclass(name = "Const", text_signature = "(id, value)")]
-struct Const {
-    #[pyo3(get)]
-    id: String,
-    #[pyo3(get)]
-    value: f64,
+impl ArenaEval for InputNode {
+    fn eval_arena(&self, values: &[f64], inputs: &HashMap<String, f64>) -> f64 {
+        self.eval(values, inputs)
+    }
 }
 
-/// Python Add wrapper (ID node with upstream input IDs).
-#[py_node(AddNode::TYPE, children)]
-#[pyclass(name = "Add", text_signature = "(id, children)")]
-struct Add {
-    #[pyo3(get)]
-    id: String,
-    #[pyo3(get)]
-    children: Vec<PyObject>,
+// Constant node
+#[derive(Debug, Clone)]
+pub struct ConstNode {
+    pub value: f64,
 }
 
-/// Python Mul wrapper (ID node with upstream input IDs).
-#[py_node(MulNode::TYPE, children)]
-#[pyclass(name = "Mul", text_signature = "(id, children)")]
-struct Mul {
-    #[pyo3(get)]
-    id: String,
-    #[pyo3(get)]
-    children: Vec<PyObject>,
+impl EvalNode for ConstNode {
+    fn eval(&self, _values: &[f64], _inputs: &HashMap<String, f64>) -> f64 {
+        self.value
+    }
 }
 
-/// Python Div wrapper (ID node with upstream input IDs).
-#[py_node(DivNode::TYPE, left, right)]
-#[pyclass(name = "Div", text_signature = "(id, left, right)")]
-struct Div {
-    #[pyo3(get)]
-    id: String,
-    #[pyo3(get)]
-    left: PyObject,
-    #[pyo3(get)]
-    right: PyObject,
+impl ArenaEval for ConstNode {
+    fn eval_arena(&self, values: &[f64], inputs: &HashMap<String, f64>) -> f64 {
+        self.eval(values, inputs)
+    }
 }
 
-/// Python Graph (factory) wrapper storing nodes by unique ID.
+// Add node
+#[derive(Debug, Clone)]
+pub struct AddNode {
+    pub children: Vec<NodeId>,
+}
+
+impl EvalNode for AddNode {
+    fn eval(&self, values: &[f64], _inputs: &HashMap<String, f64>) -> f64 {
+        self.children.iter().map(|&id| values[id]).sum()
+    }
+}
+
+impl ArenaEval for AddNode {
+    fn eval_arena(&self, values: &[f64], inputs: &HashMap<String, f64>) -> f64 {
+        self.eval(values, inputs)
+    }
+}
+
+// Multiply node
+#[derive(Debug, Clone)]
+pub struct MulNode {
+    pub children: Vec<NodeId>,
+}
+
+impl EvalNode for MulNode {
+    fn eval(&self, values: &[f64], _inputs: &HashMap<String, f64>) -> f64 {
+        self.children.iter().map(|&id| values[id]).product()
+    }
+}
+
+impl ArenaEval for MulNode {
+    fn eval_arena(&self, values: &[f64], inputs: &HashMap<String, f64>) -> f64 {
+        self.eval(values, inputs)
+    }
+}
+
+// Divide node
+#[derive(Debug, Clone)]
+pub struct DivNode {
+    pub left: NodeId,
+    pub right: NodeId,
+}
+
+impl EvalNode for DivNode {
+    fn eval(&self, values: &[f64], _inputs: &HashMap<String, f64>) -> f64 {
+        let l = values[self.left];
+        let r = values[self.right];
+        if r == 0.0 { f64::NAN } else { l / r }
+    }
+}
+
+impl ArenaEval for DivNode {
+    fn eval_arena(&self, values: &[f64], inputs: &HashMap<String, f64>) -> f64 {
+        self.eval(values, inputs)
+    }
+}
+
+// ===========================================================================
+// PYTHON BINDINGS
+// ===========================================================================
+
+// Python wrapper classes
 #[pyclass]
-struct Graph {
+pub struct Input {
+    #[pyo3(get)]
+    pub id: String,
+    #[pyo3(get)]
+    pub name: String,
+}
+
+#[pyclass(name = "Const")]
+pub struct Const {
+    #[pyo3(get)]
+    pub id: String,
+    #[pyo3(get)]
+    pub value: f64,
+}
+
+#[pyclass]
+pub struct Add {
+    #[pyo3(get)]
+    pub id: String,
+    #[pyo3(get)]
+    pub children: Vec<PyObject>,
+}
+
+#[pyclass]
+pub struct Mul {
+    #[pyo3(get)]
+    pub id: String,
+    #[pyo3(get)]
+    pub children: Vec<PyObject>,
+}
+
+#[pyclass]
+pub struct Div {
+    #[pyo3(get)]
+    pub id: String,
+    #[pyo3(get)]
+    pub left: PyObject,
+    #[pyo3(get)]
+    pub right: PyObject,
+}
+
+/// Python Graph builder
+#[pyclass]
+pub struct Graph {
     counter: usize,
     registry: HashMap<String, PyObject>,
 }
+
 #[pymethods]
 impl Graph {
     #[new]
@@ -92,171 +179,58 @@ impl Graph {
             registry: HashMap::new(),
         }
     }
-    /// Create an InputNode, register it, and return the Python node object.
-    #[pyo3(signature = (name))]
+    
     fn input(&mut self, py: Python, name: String) -> PyObject {
         let id = format!("n{}", self.counter);
         self.counter += 1;
-        let node = InputNode {
-            id: id.clone(),
-            name,
-        };
+        let node = Input { id: id.clone(), name };
         let py_node = node.into_py(py);
-        self.registry.insert(id.clone(), py_node.clone().into());
-        py_node.into()
+        self.registry.insert(id, py_node.clone());
+        py_node
     }
-    /// Create a Const, register it, and return the Python node object.
-    #[pyo3(signature = (value))]
-    fn r#const(&mut self, py: Python, value: f64) -> PyObject {
+    
+    fn const_(&mut self, py: Python, value: f64) -> PyObject {
         let id = format!("n{}", self.counter);
         self.counter += 1;
-        let node = Const {
-            id: id.clone(),
-            value,
-        };
+        let node = Const { id: id.clone(), value };
         let py_node = node.into_py(py);
-        self.registry.insert(id.clone(), py_node.clone().into());
-        py_node.into()
+        self.registry.insert(id, py_node.clone());
+        py_node
     }
-    /// Create an Add node with upstream inputs, register it, and return the Python node object.
-    #[pyo3(signature = (children))]
+    
     fn add(&mut self, py: Python, children: Vec<PyObject>) -> PyObject {
         let id = format!("n{}", self.counter);
         self.counter += 1;
         let node = Add { id: id.clone(), children };
         let py_node = node.into_py(py);
-        self.registry.insert(id.clone(), py_node.clone().into());
-        py_node.into()
+        self.registry.insert(id, py_node.clone());
+        py_node
     }
-    /// Create a Mul node with upstream inputs, register it, and return the Python node object.
-    #[pyo3(signature = (children))]
+    
     fn mul(&mut self, py: Python, children: Vec<PyObject>) -> PyObject {
         let id = format!("n{}", self.counter);
         self.counter += 1;
         let node = Mul { id: id.clone(), children };
         let py_node = node.into_py(py);
-        self.registry.insert(id.clone(), py_node.clone().into());
-        py_node.into()
+        self.registry.insert(id, py_node.clone());
+        py_node
     }
-    /// Create a Div node with upstream inputs, register it, and return the Python node object.
-    #[pyo3(signature = (left, right))]
+    
     fn div(&mut self, py: Python, left: PyObject, right: PyObject) -> PyObject {
         let id = format!("n{}", self.counter);
         self.counter += 1;
         let node = Div { id: id.clone(), left, right };
         let py_node = node.into_py(py);
-        self.registry.insert(id.clone(), py_node.clone().into());
-        py_node.into()
+        self.registry.insert(id, py_node.clone());
+        py_node
     }
-
-    /// Freeze the graph (reachable from `root`) into a flat YAML spec.
-    #[pyo3(signature = (root))]
+    
     fn freeze(&self, py: Python, root: PyObject) -> PyResult<String> {
-        // Discover reachable nodes and collect their string IDs
-        let mut seen = Vec::new();
-        let root_str: String = root.as_ref(py).getattr("id")?.extract()?;
-        let mut stack = vec![root.clone()];
-        while let Some(obj) = stack.pop() {
-            let id: String = obj.as_ref(py).getattr("id")?.extract()?;
-            if seen.contains(&id) { continue; }
-            seen.push(id.clone());
-            let cls = obj.as_ref(py).get_type();
-            if let Ok(fields) = cls.getattr("FIELDS") {
-                if let Ok(field_names) = fields.extract::<Vec<String>>() {
-                    for field in field_names {
-                        let val = obj.as_ref(py).getattr(field.as_str())?;
-                        if let Ok(seq) = val.cast_as::<PySequence>() {
-                            for item in seq.iter()? {
-                                let child: PyObject = item?.extract()?;
-                                if child.as_ref(py).get_type().getattr("TYPE").is_ok() {
-                                    stack.push(child);
-                                }
-                            }
-                        } else if let Ok(child) = val.extract::<PyObject>() {
-                            if child.as_ref(py).get_type().getattr("TYPE").is_ok() {
-                                stack.push(child);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Reverse to get a topological (parents after children) order
-        seen.reverse();
-
-        // Assign each string ID a numeric NodeId
-        let mut id2idx = HashMap::new();
-        for (i, sid) in seen.iter().enumerate() {
-            id2idx.insert(sid.clone(), i);
-        }
-        let root_idx = *id2idx.get(&root_str).unwrap();
-
-        // Build an arena-style YAML spec: a sequence of node mappings
-        let mut nodes_seq = Vec::with_capacity(seen.len());
-        for sid in &seen {
-            let obj = self.registry.get(sid)
-                .ok_or_else(|| PyValueError::new_err(format!("Unknown node ID '{}'", sid)))?;
-            let mut mapping = Mapping::new();
-            // numeric ID
-            mapping.insert(
-                Value::String("id".into()),
-                serde_yaml::to_value(id2idx[sid]).unwrap(),
-            );
-            // type tag
-            let tag: String = obj.as_ref(py).get_type().getattr("TYPE")?.extract()?;
-            mapping.insert(Value::String("type".into()), Value::String(tag));
-            // each declared field
-            let fields: Vec<String> = obj.as_ref(py).get_type().getattr("FIELDS")?.extract()?;
-            for field in fields {
-                let val = obj.as_ref(py).getattr(field.as_str())?;
-                let entry = if let Ok(list) = val.downcast::<pyo3::types::PyList>() {
-                    let mut idxs = Vec::new();
-                    for item in list.iter() {
-                        let child = item;
-                        let cid: String = child.getattr("id")?.extract()?;
-                        idxs.push(Value::Number(serde_yaml::Number::from(id2idx[&cid] as i64)));
-                    }
-                    Value::Sequence(idxs)
-                } else if let Ok(child) = val.extract::<PyObject>() {
-                    if child.as_ref(py).hasattr("id")? {
-                        let cid: String = child.as_ref(py).getattr("id")?.extract()?;
-                        Value::Number(serde_yaml::Number::from(id2idx[&cid] as i64))
-                    } else {
-                        // This is a non-node value, try to extract it directly
-                        if let Ok(s) = child.extract::<String>(py) {
-                            Value::String(s)
-                        } else if let Ok(f) = child.extract::<f64>(py) {
-                            serde_yaml::to_value(f).map_err(|e| PyValueError::new_err(e.to_string()))?
-                        } else {
-                            continue;
-                        }
-                    }
-                } else if let Ok(s) = val.extract::<String>() {
-                    Value::String(s)
-                } else if let Ok(f) = val.extract::<f64>() {
-                    serde_yaml::to_value(f).map_err(|e| PyValueError::new_err(e.to_string()))?
-                } else {
-                    return Err(PyValueError::new_err(format!(
-                        "Unsupported field '{}' on node '{}'", field, sid
-                    )));
-                };
-                mapping.insert(Value::String(field), entry);
-            }
-            nodes_seq.push(Value::Mapping(mapping));
-        }
-
-        let mut top = Mapping::new();
-        top.insert(Value::String("nodes".into()), Value::Sequence(nodes_seq));
-        top.insert(Value::String("root".into()), Value::Number(serde_yaml::Number::from(root_idx as i64)));
-
-        let yaml = serde_yaml::to_string(&Value::Mapping(top))
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(yaml.trim_end_matches('\n').to_string())
+        freeze_graph(self, py, root)
     }
 }
 
-/// Python Sampler wrapper (delegates to core engine).
-/// Python sampler for arena graphs using the new ArenaEngine.
+/// Python Sampler
 #[pyclass]
 struct Sampler {
     graph: String,
@@ -266,38 +240,217 @@ struct Sampler {
 
 #[pymethods]
 impl Sampler {
-    /// Construct from the frozen arena-graph YAML and list of output node IDs.
     #[new]
-    #[pyo3(signature = (graph, outputs, engine_name = "topological"))]
+    #[pyo3(signature = (graph, outputs, engine_name = "lazy"))]
     fn new(graph: &str, outputs: Vec<usize>, engine_name: &str) -> PyResult<Self> {
-        // Validate syntax by parsing
-        crate::engine::ArenaGraph::from_yaml(graph)
-            .map_err(|e| PyValueError::new_err(e))?;
-        // Validate engine name
-        match engine_name {
-            "topological" | "lazy" => {},
-            _ => return Err(PyValueError::new_err(format!("Unknown engine: {}", engine_name))),
-        }
+        ArenaGraph::from_yaml(graph)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
         Ok(Sampler { 
             graph: graph.to_string(), 
             outputs,
             engine_name: engine_name.to_string(),
         })
     }
-
-    /// Run the sampler engine: a list of input rows to a list of output records.
+    
     fn run(&self, rows: Vec<HashMap<String, f64>>) -> PyResult<Vec<HashMap<String, f64>>> {
-        let arena = crate::engine::ArenaGraph::from_yaml(&self.graph)
-            .map_err(|e| PyValueError::new_err(e))?;
+        let arena = ArenaGraph::from_yaml(&self.graph)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
         
-        let engine: Box<dyn crate::engine::Engine> = match self.engine_name.as_str() {
-            "topological" => Box::new(crate::engine::ArenaEngine::new(self.outputs.clone())),
-            "lazy" => Box::new(crate::engine::LazyArenaEngine::new(self.outputs.clone())),
-            _ => unreachable!(), // Already validated in new()
-        };
+        // Build nodes manually based on tag
+        let mut nodes: Vec<Box<dyn ArenaEval>> = Vec::new();
+        for arena_node in &arena.nodes {
+            let node: Box<dyn ArenaEval> = match arena_node.tag.as_str() {
+                "input" => {
+                    let name = match arena_node.fields.get("name") {
+                        Some(engine::FieldValue::Str(s)) => s.clone(),
+                        _ => return Err(pyo3::exceptions::PyValueError::new_err("input node missing name")),
+                    };
+                    Box::new(InputNode { name })
+                },
+                "const" => {
+                    let value = match arena_node.fields.get("value") {
+                        Some(engine::FieldValue::Float(f)) => *f,
+                        _ => return Err(pyo3::exceptions::PyValueError::new_err("const node missing value")),
+                    };
+                    Box::new(ConstNode { value })
+                },
+                "add" => {
+                    let children = match arena_node.fields.get("children") {
+                        Some(engine::FieldValue::Many(ids)) => ids.clone(),
+                        _ => return Err(pyo3::exceptions::PyValueError::new_err("add node missing children")),
+                    };
+                    Box::new(AddNode { children })
+                },
+                "mul" => {
+                    let children = match arena_node.fields.get("children") {
+                        Some(engine::FieldValue::Many(ids)) => ids.clone(),
+                        _ => return Err(pyo3::exceptions::PyValueError::new_err("mul node missing children")),
+                    };
+                    Box::new(MulNode { children })
+                },
+                "div" => {
+                    let left = match arena_node.fields.get("left") {
+                        Some(engine::FieldValue::One(id)) => *id,
+                        _ => return Err(pyo3::exceptions::PyValueError::new_err("div node missing left")),
+                    };
+                    let right = match arena_node.fields.get("right") {
+                        Some(engine::FieldValue::One(id)) => *id,
+                        _ => return Err(pyo3::exceptions::PyValueError::new_err("div node missing right")),
+                    };
+                    Box::new(DivNode { left, right })
+                },
+                _ => return Err(pyo3::exceptions::PyValueError::new_err(format!("Unknown node type: {}", arena_node.tag))),
+            };
+            nodes.push(node);
+        }
         
-        Ok(engine.run(&arena, rows))
+        // Run evaluation with trigger-based output
+        let mut results = Vec::new();
+        let mut prev_trigger: Option<f64> = None;
+        
+        for row in rows {
+            let mut values = vec![0.0; arena.nodes.len()];
+            
+            // Evaluate all nodes
+            for i in 0..arena.nodes.len() {
+                values[i] = nodes[i].eval_arena(&values, &row);
+            }
+            
+            // Check trigger
+            let trigger_val = values[arena.root];
+            if prev_trigger.map_or(true, |p| p != trigger_val) {
+                let mut record = HashMap::new();
+                record.insert("trigger".to_string(), trigger_val);
+                
+                for (i, &output_id) in self.outputs.iter().enumerate() {
+                    record.insert(format!("output{}", i), values[output_id]);
+                }
+                
+                results.push(record);
+                prev_trigger = Some(trigger_val);
+            }
+        }
+        
+        Ok(results)
     }
 }
 
-// NOTE: freeze() will be reimplemented in Phase 2 for arena/ID flattening.
+/// Python module
+#[pymodule]
+fn sdag(_py: Python, m: &PyModule) -> PyResult<()> {
+    m.add_class::<Input>()?;
+    m.add_class::<Const>()?;
+    m.add_class::<Add>()?;
+    m.add_class::<Mul>()?;
+    m.add_class::<Div>()?;
+    m.add_class::<Graph>()?;
+    m.add_class::<Sampler>()?;
+    Ok(())
+}
+
+// Helper function for freeze
+fn freeze_graph(graph: &Graph, py: Python, root: PyObject) -> PyResult<String> {
+    use serde_yaml::{Mapping, Value};
+    
+    // Helper to get node type
+    fn get_node_type(py: Python, obj: &PyObject) -> PyResult<String> {
+        let cls_name = obj.as_ref(py).get_type().name()?;
+        Ok(cls_name.to_string())
+    }
+    
+    // Discover reachable nodes
+    let mut seen = Vec::new();
+    let root_str: String = root.as_ref(py).getattr("id")?.extract()?;
+    let mut stack = vec![root.clone()];
+    
+    while let Some(obj) = stack.pop() {
+        let id: String = obj.as_ref(py).getattr("id")?.extract()?;
+        if seen.contains(&id) { continue; }
+        seen.push(id.clone());
+        
+        let node_type = get_node_type(py, &obj)?;
+        match node_type.as_str() {
+            "Add" | "Mul" => {
+                let children: Vec<PyObject> = obj.as_ref(py).getattr("children")?.extract()?;
+                for child in children {
+                    stack.push(child);
+                }
+            },
+            "Div" => {
+                let left: PyObject = obj.as_ref(py).getattr("left")?.extract()?;
+                let right: PyObject = obj.as_ref(py).getattr("right")?.extract()?;
+                stack.push(left);
+                stack.push(right);
+            },
+            _ => {},
+        }
+    }
+    
+    seen.reverse();
+    
+    // Build YAML
+    let mut id2idx = HashMap::new();
+    for (i, sid) in seen.iter().enumerate() {
+        id2idx.insert(sid.clone(), i);
+    }
+    
+    let mut nodes_seq = Vec::new();
+    for sid in &seen {
+        let obj = graph.registry.get(sid)
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("Unknown node '{}'", sid)))?;
+        
+        let mut mapping = Mapping::new();
+        mapping.insert(Value::String("id".into()), serde_yaml::to_value(id2idx[sid]).unwrap());
+        
+        let node_type = get_node_type(py, obj)?;
+        let tag = match node_type.as_str() {
+            "Input" => "input",
+            "Const" => "const",
+            "Add" => "add",
+            "Mul" => "mul",
+            "Div" => "div",
+            _ => return Err(pyo3::exceptions::PyValueError::new_err(format!("Unknown node type: {}", node_type))),
+        };
+        mapping.insert(Value::String("type".into()), Value::String(tag.to_string()));
+        
+        // Add fields based on node type
+        match tag {
+            "input" => {
+                let name: String = obj.as_ref(py).getattr("name")?.extract()?;
+                mapping.insert(Value::String("name".into()), Value::String(name));
+            },
+            "const" => {
+                let value: f64 = obj.as_ref(py).getattr("value")?.extract()?;
+                mapping.insert(Value::String("value".into()), serde_yaml::to_value(value).unwrap());
+            },
+            "add" | "mul" => {
+                let children: Vec<PyObject> = obj.as_ref(py).getattr("children")?.extract()?;
+                let mut idxs = Vec::new();
+                for child in children {
+                    let cid: String = child.as_ref(py).getattr("id")?.extract()?;
+                    idxs.push(Value::Number(serde_yaml::Number::from(id2idx[&cid] as i64)));
+                }
+                mapping.insert(Value::String("children".into()), Value::Sequence(idxs));
+            },
+            "div" => {
+                let left: PyObject = obj.as_ref(py).getattr("left")?.extract()?;
+                let right: PyObject = obj.as_ref(py).getattr("right")?.extract()?;
+                let lid: String = left.as_ref(py).getattr("id")?.extract()?;
+                let rid: String = right.as_ref(py).getattr("id")?.extract()?;
+                mapping.insert(Value::String("left".into()), Value::Number(serde_yaml::Number::from(id2idx[&lid] as i64)));
+                mapping.insert(Value::String("right".into()), Value::Number(serde_yaml::Number::from(id2idx[&rid] as i64)));
+            },
+            _ => {},
+        }
+        
+        nodes_seq.push(Value::Mapping(mapping));
+    }
+    
+    let mut top = Mapping::new();
+    top.insert(Value::String("nodes".into()), Value::Sequence(nodes_seq));
+    top.insert(Value::String("root".into()), Value::Number(serde_yaml::Number::from(*id2idx.get(&root_str).unwrap() as i64)));
+    
+    serde_yaml::to_string(&Value::Mapping(top))
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        .map(|s| s.trim_end_matches('\n').to_string())
+}
