@@ -1,6 +1,5 @@
-use std::collections::HashMap;
 use anyhow::Result;
-use crate::{DagError, NodeOp};
+use crate::NodeOp;
 
 pub type NodeId = usize;
 
@@ -54,69 +53,55 @@ impl Engine {
         }
     }
     
-    /// Set the trigger node that controls output emission
-    pub fn set_trigger(&mut self, trigger: NodeId) {
-        self.trigger_node = Some(trigger);
+    /// Set which node acts as the trigger
+    pub fn set_trigger(&mut self, node_id: NodeId) {
+        self.trigger_node = Some(node_id);
     }
     
-    /// Set the output nodes to collect when trigger fires
-    pub fn set_outputs(&mut self, outputs: Vec<NodeId>) {
-        self.output_nodes = outputs;
+    /// Set which nodes to output when triggered
+    pub fn set_outputs(&mut self, node_ids: Vec<NodeId>) {
+        self.output_nodes = node_ids;
     }
     
-    /// Evaluate the DAG for one row of input values
+    /// Process one step of streaming input
     /// Returns Some(outputs) if trigger fired, None otherwise
     pub fn evaluate_step(&mut self, input_values: &[f64]) -> Option<Vec<f64>> {
-        let n = self.nodes.len();
+        // Clear changed flags
+        self.changed.fill(false);
         
-        if self.first_run {
-            // First run: mark everything dirty and compute all values
-            self.changed.fill(true);
-            
-            // Set input values
-            for &(node_id, input_idx) in &self.input_nodes {
-                self.values[node_id] = input_values[input_idx];
-            }
-            
-            // Compute all nodes in topological order
-            for i in 0..n {
-                if !matches!(self.nodes[i], NodeOp::Input { .. }) {
-                    self.compute_node(i);
-                }
-            }
-            
-            self.first_run = false;
-        } else {
-            // Incremental update
-            self.values.copy_from_slice(&self.prev_values);
-            self.changed.fill(false);
-            
-            // Update input nodes and mark dirty if changed
-            for &(node_id, input_idx) in &self.input_nodes {
-                let new_val = input_values[input_idx];
-                let old_val = self.prev_values[node_id];
+        // Update input nodes
+        for &(node_id, input_index) in &self.input_nodes {
+            if input_index < input_values.len() {
+                let new_val = input_values[input_index];
+                let old_val = self.values[node_id];
                 
-                if (new_val - old_val).abs() > f64::EPSILON {
+                if self.first_run || (new_val - old_val).abs() > f64::EPSILON {
                     self.values[node_id] = new_val;
                     self.changed[node_id] = true;
                 }
             }
-            
-            // Single pass evaluation in topological order
-            for i in 0..n {
+        }
+        
+        // Mark all nodes as changed on first run
+        if self.first_run {
+            self.changed.fill(true);
+            self.first_run = false;
+        }
+        
+        // Evaluate nodes in topological order (they're already sorted)
+        // This is the hot path - optimize for CPU cache and branch prediction
+        for i in 0..self.nodes.len() {
+            if self.changed[i] {
+                // Node is marked as changed, compute it
+                self.compute_node(i);
+            } else {
+                // Check if any inputs changed
                 match &self.nodes[i] {
-                    NodeOp::Input { .. } => {
-                        // Already handled above
-                    }
-                    NodeOp::Constant(_) => {
-                        // Constants never change after first run
-                    }
+                    NodeOp::Constant { .. } => continue, // Never changes after first run
+                    NodeOp::Input { .. } => continue, // Already handled above
                     _ => {
-                        // Check if any inputs changed
-                        let inputs_changed = self.check_inputs_changed(i);
-                        
-                        if inputs_changed {
-                            let old_val = self.prev_values[i];
+                        if self.check_inputs_changed(i) {
+                            let old_val = self.values[i];
                             self.compute_node(i);
                             let new_val = self.values[i];
                             
@@ -135,7 +120,8 @@ impl Engine {
         
         // Check trigger and emit outputs if fired
         if let Some(trigger) = self.trigger_node {
-            if self.changed[trigger] {
+            // Trigger fires when value is > 0 (truthy)
+            if self.values[trigger] > 0.0 {
                 let outputs: Vec<f64> = self.output_nodes.iter()
                     .map(|&id| self.values[id])
                     .collect();
@@ -148,52 +134,47 @@ impl Engine {
     
     /// Check if any inputs to a node changed
     fn check_inputs_changed(&self, node_id: NodeId) -> bool {
-        match &self.nodes[node_id] {
-            NodeOp::Add { a, b } | NodeOp::Multiply { a, b } => {
-                self.changed[*a] || self.changed[*b]
-            }
-            NodeOp::Sum { inputs } => {
-                inputs.iter().any(|&i| self.changed[i])
-            }
-            NodeOp::ConstantProduct { input, .. } => {
-                self.changed[*input]
-            }
-            NodeOp::Comparison { a, b, .. } => {
-                self.changed[*a] || self.changed[*b]
-            }
-            _ => false,
-        }
+        let inputs = self.nodes[node_id].inputs();
+        inputs.iter().any(|&idx| self.changed[idx])
     }
     
-    /// Compute a node's value (assumes inputs are already computed)
+    /// Compute a single node's value
+    /// SAFETY: This is the hot path. We use unsafe array access after bounds checking
+    /// at construction time. All node indices are guaranteed valid.
+    #[inline(always)]
     fn compute_node(&mut self, i: NodeId) {
-        // SAFETY: This is the hot path. We know i < nodes.len() from the caller.
-        // All input indices are validated during graph construction.
         unsafe {
             let node = self.nodes.get_unchecked(i);
             let result = match node {
-                NodeOp::Constant(val) => *val,
+                NodeOp::Constant { value } => *value,
                 NodeOp::Input { .. } => *self.values.get_unchecked(i), // Already set
-                NodeOp::Add { a, b } => {
-                    *self.values.get_unchecked(*a) + *self.values.get_unchecked(*b)
+                NodeOp::Add { inputs } => {
+                    // Assuming exactly 2 inputs for Add
+                    *self.values.get_unchecked(inputs[0]) + *self.values.get_unchecked(inputs[1])
                 }
-                NodeOp::Multiply { a, b } => {
-                    *self.values.get_unchecked(*a) * *self.values.get_unchecked(*b)
+                NodeOp::Multiply { inputs } => {
+                    // Assuming exactly 2 inputs for Multiply
+                    *self.values.get_unchecked(inputs[0]) * *self.values.get_unchecked(inputs[1])
                 }
                 NodeOp::Sum { inputs } => {
                     inputs.iter().map(|&idx| *self.values.get_unchecked(idx)).sum()
                 }
-                NodeOp::ConstantProduct { input, factor } => {
-                    *self.values.get_unchecked(*input) * factor
+                NodeOp::ConstantProduct { inputs, factor } => {
+                    *self.values.get_unchecked(inputs[0]) * factor
                 }
-                NodeOp::Comparison { a, b, op } => {
-                    let va = *self.values.get_unchecked(*a);
-                    let vb = *self.values.get_unchecked(*b);
+                NodeOp::Comparison { inputs, op } => {
+                    let va = *self.values.get_unchecked(inputs[0]);
+                    let vb = *self.values.get_unchecked(inputs[1]);
                     match op {
                         crate::ComparisonOp::GreaterThan => if va > vb { 1.0 } else { 0.0 },
                         crate::ComparisonOp::LessThan => if va < vb { 1.0 } else { 0.0 },
                         crate::ComparisonOp::Equal => if (va - vb).abs() < f64::EPSILON { 1.0 } else { 0.0 },
                     }
+                }
+                NodeOp::Pow { inputs } => {
+                    let base = *self.values.get_unchecked(inputs[0]);
+                    let exp = *self.values.get_unchecked(inputs[1]);
+                    base.powf(exp)
                 }
             };
             *self.values.get_unchecked_mut(i) = result;
@@ -211,129 +192,28 @@ impl Engine {
     }
 }
 
+/// Simplified YAML format using indices directly
+#[derive(Debug, serde::Deserialize)]
+struct DagYamlSimple {
+    nodes: Vec<NodeOp>,
+    trigger: Option<usize>,
+    outputs: Option<Vec<usize>>,
+}
+
 /// Build an engine from a YAML string
 pub fn from_yaml(yaml_str: &str) -> Result<Engine> {
-    let dag_yaml: crate::DagYaml = serde_yaml::from_str(yaml_str)?;
+    // Parse YAML directly - no string resolution needed!
+    let dag: DagYamlSimple = serde_yaml::from_str(yaml_str)?;
     
-    // Map string IDs to indices
-    let mut id_map = HashMap::new();
-    for (i, node) in dag_yaml.nodes.iter().enumerate() {
-        id_map.insert(node.id.clone(), i);
+    let mut engine = Engine::new(dag.nodes);
+    
+    // Set trigger and outputs (already indices)
+    if let Some(trigger) = dag.trigger {
+        engine.set_trigger(trigger);
     }
     
-    // Convert YAML nodes to NodeOp enum
-    let mut nodes = Vec::with_capacity(dag_yaml.nodes.len());
-    for node in &dag_yaml.nodes {
-        let op = match node.node_type.as_str() {
-            "Constant" => {
-                let value = node.params.get("value")
-                    .and_then(|v| v.as_f64())
-                    .ok_or_else(|| DagError::InvalidInput("Constant requires 'value' parameter".into()))?;
-                NodeOp::Constant(value)
-            }
-            "Input" => {
-                let input_index = node.params.get("input_index")
-                    .and_then(|v| v.as_u64())
-                    .ok_or_else(|| DagError::InvalidInput("Input requires 'input_index' parameter".into()))?
-                    as usize;
-                NodeOp::Input { input_index }
-            }
-            "Add" => {
-                let inputs = node.params.get("inputs")
-                    .and_then(|v| v.as_array())
-                    .ok_or_else(|| DagError::InvalidInput("Add requires 'inputs' array".into()))?;
-                if inputs.len() != 2 {
-                    return Err(DagError::InvalidInput("Add requires exactly 2 inputs".into()).into());
-                }
-                let a = inputs[0].as_str()
-                    .and_then(|s| id_map.get(s))
-                    .ok_or_else(|| DagError::NodeNotFound(inputs[0].to_string()))?;
-                let b = inputs[1].as_str()
-                    .and_then(|s| id_map.get(s))
-                    .ok_or_else(|| DagError::NodeNotFound(inputs[1].to_string()))?;
-                NodeOp::Add { a: *a, b: *b }
-            }
-            "Multiply" => {
-                let inputs = node.params.get("inputs")
-                    .and_then(|v| v.as_array())
-                    .ok_or_else(|| DagError::InvalidInput("Multiply requires 'inputs' array".into()))?;
-                if inputs.len() != 2 {
-                    return Err(DagError::InvalidInput("Multiply requires exactly 2 inputs".into()).into());
-                }
-                let a = inputs[0].as_str()
-                    .and_then(|s| id_map.get(s))
-                    .ok_or_else(|| DagError::NodeNotFound(inputs[0].to_string()))?;
-                let b = inputs[1].as_str()
-                    .and_then(|s| id_map.get(s))
-                    .ok_or_else(|| DagError::NodeNotFound(inputs[1].to_string()))?;
-                NodeOp::Multiply { a: *a, b: *b }
-            }
-            "Comparison" => {
-                let inputs = node.params.get("inputs")
-                    .and_then(|v| v.as_array())
-                    .ok_or_else(|| DagError::InvalidInput("Comparison requires 'inputs' array".into()))?;
-                if inputs.len() != 2 {
-                    return Err(DagError::InvalidInput("Comparison requires exactly 2 inputs".into()).into());
-                }
-                let a = inputs[0].as_str()
-                    .and_then(|s| id_map.get(s))
-                    .ok_or_else(|| DagError::NodeNotFound(inputs[0].to_string()))?;
-                let b = inputs[1].as_str()
-                    .and_then(|s| id_map.get(s))
-                    .ok_or_else(|| DagError::NodeNotFound(inputs[1].to_string()))?;
-                
-                let op_str = node.params.get("op")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| DagError::InvalidInput("Comparison requires 'op' parameter".into()))?;
-                
-                let op = match op_str {
-                    "GreaterThan" => crate::ComparisonOp::GreaterThan,
-                    "LessThan" => crate::ComparisonOp::LessThan,
-                    "Equal" => crate::ComparisonOp::Equal,
-                    _ => return Err(DagError::InvalidInput(format!("Unknown comparison op: {}", op_str)).into()),
-                };
-                
-                NodeOp::Comparison { a: *a, b: *b, op }
-            }
-            "Sum" => {
-                let inputs = node.params.get("inputs")
-                    .and_then(|v| v.as_array())
-                    .ok_or_else(|| DagError::InvalidInput("Sum requires 'inputs' array".into()))?;
-                
-                let input_indices: Result<Vec<_>> = inputs.iter()
-                    .map(|input| {
-                        input.as_str()
-                            .and_then(|s| id_map.get(s))
-                            .copied()
-                            .ok_or_else(|| DagError::NodeNotFound(input.to_string()).into())
-                    })
-                    .collect();
-                
-                NodeOp::Sum { inputs: input_indices? }
-            }
-            _ => return Err(DagError::InvalidInput(format!("Unknown node type: {}", node.node_type)).into()),
-        };
-        nodes.push(op);
-    }
-    
-    // TODO: Verify topological order
-    
-    let mut engine = Engine::new(nodes);
-    
-    // Set trigger and outputs if specified
-    if let Some(trigger_id) = dag_yaml.trigger {
-        let trigger_idx = id_map.get(&trigger_id)
-            .ok_or_else(|| DagError::NodeNotFound(trigger_id))?;
-        engine.set_trigger(*trigger_idx);
-    }
-    
-    if let Some(output_ids) = dag_yaml.outputs {
-        let output_indices: Result<Vec<_>> = output_ids.iter()
-            .map(|id| id_map.get(id)
-                .copied()
-                .ok_or_else(|| DagError::NodeNotFound(id.clone()).into()))
-            .collect();
-        engine.set_outputs(output_indices?);
+    if let Some(outputs) = dag.outputs {
+        engine.set_outputs(outputs);
     }
     
     Ok(engine)

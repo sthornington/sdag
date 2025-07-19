@@ -2,13 +2,11 @@ use thiserror::Error;
 
 pub mod engine;
 pub mod nodes;
-pub mod yaml;
 #[cfg(feature = "python")]
 pub mod python;
 
 pub use engine::{Engine, NodeId};
 pub use nodes::{NodeOp, ComparisonOp};
-pub use yaml::DagYaml;
 
 #[derive(Error, Debug)]
 pub enum DagError {

@@ -1,0 +1,10 @@
+nodes:
+  - type: Constant    # 0: base = 2.0
+    params:
+      value: 2.0
+  - type: Constant    # 1: exponent = 3.0
+    params:
+      value: 3.0
+  - type: Pow         # 2: result = 2^3 = 8
+    params:
+      inputs: [0, 1]

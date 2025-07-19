@@ -1,245 +1,20 @@
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
+use pyo3::types::{PyDict, PyTuple};
 use crate::{Engine, engine};
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::HashMap;
 
 /// Global counter for generating unique node IDs
 static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Base class for all DAG nodes in Python
-#[pyclass(subclass)]
-#[derive(Clone)]
-struct Node {
-    #[pyo3(get)]
-    node_id: String,
-    yaml_data: serde_yaml::Value,
-}
-
-#[pymethods]
-impl Node {
-    fn to_yaml(&self) -> PyResult<String> {
-        serde_yaml::to_string(&self.yaml_data)
-            .map_err(|e| PyValueError::new_err(e.to_string()))
-    }
-}
-
-/// Input node that receives streaming data
-#[pyclass(extends=Node)]
-struct InputNode {
-    #[pyo3(get)]
-    input_index: usize,
-}
-
-#[pymethods]
-impl InputNode {
-    #[new]
-    fn new(input_index: usize) -> PyResult<(Self, Node)> {
-        let node_id = format!("input_{}", NODE_ID_COUNTER.fetch_add(1, Ordering::SeqCst));
-        let yaml_data = json!({
-            "id": &node_id,
-            "type": "Input",
-            "params": {
-                "input_index": input_index
-            }
-        });
-        
-        Ok((
-            InputNode { input_index },
-            Node {
-                node_id,
-                yaml_data: serde_yaml::to_value(yaml_data).unwrap(),
-            }
-        ))
-    }
-}
-
-/// Constant value node
-#[pyclass(extends=Node)]
-struct ConstantNode {
-    #[pyo3(get)]
-    value: f64,
-}
-
-#[pymethods]
-impl ConstantNode {
-    #[new]
-    fn new(value: f64) -> PyResult<(Self, Node)> {
-        let node_id = format!("const_{}", NODE_ID_COUNTER.fetch_add(1, Ordering::SeqCst));
-        let yaml_data = json!({
-            "id": &node_id,
-            "type": "Constant",
-            "params": {
-                "value": value
-            }
-        });
-        
-        Ok((
-            ConstantNode { value },
-            Node {
-                node_id,
-                yaml_data: serde_yaml::to_value(yaml_data).unwrap(),
-            }
-        ))
-    }
-}
-
-/// Addition node
-#[pyclass(extends=Node)]
-struct AddNode {}
-
-#[pymethods]
-impl AddNode {
-    #[new]
-    fn new(_py: Python, a: &PyAny, b: &PyAny) -> PyResult<(Self, Node)> {
-        let a_node: &PyCell<Node> = a.extract()?;
-        let b_node: &PyCell<Node> = b.extract()?;
-        
-        let node_id = format!("add_{}", NODE_ID_COUNTER.fetch_add(1, Ordering::SeqCst));
-        let yaml_data = json!({
-            "id": &node_id,
-            "type": "Add",
-            "params": {
-                "inputs": [
-                    a_node.borrow().node_id.clone(),
-                    b_node.borrow().node_id.clone()
-                ]
-            }
-        });
-        
-        Ok((
-            AddNode {},
-            Node {
-                node_id,
-                yaml_data: serde_yaml::to_value(yaml_data).unwrap(),
-            }
-        ))
-    }
-    
-    // TODO: Add operator overloading support
-}
-
-/// Multiplication node
-#[pyclass(extends=Node)]
-struct MultiplyNode {}
-
-#[pymethods]
-impl MultiplyNode {
-    #[new]
-    fn new(_py: Python, a: &PyAny, b: &PyAny) -> PyResult<(Self, Node)> {
-        let a_node: &PyCell<Node> = a.extract()?;
-        let b_node: &PyCell<Node> = b.extract()?;
-        
-        let node_id = format!("mul_{}", NODE_ID_COUNTER.fetch_add(1, Ordering::SeqCst));
-        let yaml_data = json!({
-            "id": &node_id,
-            "type": "Multiply",
-            "params": {
-                "inputs": [
-                    a_node.borrow().node_id.clone(),
-                    b_node.borrow().node_id.clone()
-                ]
-            }
-        });
-        
-        Ok((
-            MultiplyNode {},
-            Node {
-                node_id,
-                yaml_data: serde_yaml::to_value(yaml_data).unwrap(),
-            }
-        ))
-    }
-    
-    // TODO: Add operator overloading support
-}
-
-/// Sum node for multiple inputs
-#[pyclass(extends=Node)]
-struct SumNode {}
-
-#[pymethods]
-impl SumNode {
-    #[new]
-    fn new(_py: Python, inputs: Vec<&PyAny>) -> PyResult<(Self, Node)> {
-        let mut input_ids = Vec::new();
-        
-        for input in inputs {
-            let node: &PyCell<Node> = input.extract()?;
-            input_ids.push(node.borrow().node_id.clone());
-        }
-        
-        let node_id = format!("sum_{}", NODE_ID_COUNTER.fetch_add(1, Ordering::SeqCst));
-        let yaml_data = json!({
-            "id": &node_id,
-            "type": "Sum",
-            "params": {
-                "inputs": input_ids
-            }
-        });
-        
-        Ok((
-            SumNode {},
-            Node {
-                node_id,
-                yaml_data: serde_yaml::to_value(yaml_data).unwrap(),
-            }
-        ))
-    }
-}
-
-/// Comparison node
-#[pyclass(extends=Node)]
-struct ComparisonNode {
-    #[pyo3(get)]
-    op: String,
-}
-
-#[pymethods]
-impl ComparisonNode {
-    #[new]
-    fn new(_py: Python, a: &PyAny, b: &PyAny, op: String) -> PyResult<(Self, Node)> {
-        let a_node: &PyCell<Node> = a.extract()?;
-        let b_node: &PyCell<Node> = b.extract()?;
-        
-        // Validate operation
-        if !["GreaterThan", "LessThan", "Equal"].contains(&op.as_str()) {
-            return Err(PyValueError::new_err(
-                format!("Invalid comparison op: {}. Must be GreaterThan, LessThan, or Equal", op)
-            ));
-        }
-        
-        let node_id = format!("cmp_{}", NODE_ID_COUNTER.fetch_add(1, Ordering::SeqCst));
-        let yaml_data = json!({
-            "id": &node_id,
-            "type": "Comparison",
-            "params": {
-                "inputs": [
-                    a_node.borrow().node_id.clone(),
-                    b_node.borrow().node_id.clone()
-                ],
-                "op": &op
-            }
-        });
-        
-        Ok((
-            ComparisonNode {
-                op,
-            },
-            Node {
-                node_id,
-                yaml_data: serde_yaml::to_value(yaml_data).unwrap(),
-            }
-        ))
-    }
-}
-
-// Comparison helper functions removed - use ComparisonNode directly
-
-/// Graph class that collects nodes and can be converted to YAML
+/// Graph class that collects nodes
 #[pyclass]
-struct Graph {
+#[derive(Clone)]
+pub struct Graph {
     nodes: Vec<serde_yaml::Value>,
+    node_ids: Vec<String>,
     trigger: Option<String>,
     outputs: Vec<String>,
 }
@@ -250,34 +25,12 @@ impl Graph {
     fn new() -> Self {
         Graph {
             nodes: Vec::new(),
+            node_ids: Vec::new(),
             trigger: None,
             outputs: Vec::new(),
         }
     }
     
-    /// Add a node to the graph
-    fn add_node(&mut self, node: &PyAny) -> PyResult<()> {
-        let node_obj: &PyCell<Node> = node.extract()?;
-        let borrowed = node_obj.borrow();
-        self.nodes.push(borrowed.yaml_data.clone());
-        Ok(())
-    }
-    
-    /// Set trigger node
-    fn set_trigger(&mut self, node: &PyAny) -> PyResult<()> {
-        let node_obj: &PyCell<Node> = node.extract()?;
-        self.trigger = Some(node_obj.borrow().node_id.clone());
-        Ok(())
-    }
-    
-    /// Add output node
-    fn add_output(&mut self, node: &PyAny) -> PyResult<()> {
-        let node_obj: &PyCell<Node> = node.extract()?;
-        self.outputs.push(node_obj.borrow().node_id.clone());
-        Ok(())
-    }
-    
-    /// Convert to YAML string
     fn to_yaml(&self) -> PyResult<String> {
         let dag = json!({
             "nodes": self.nodes,
@@ -289,12 +42,241 @@ impl Graph {
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
     
-    /// Build an engine from this graph
     fn build_engine(&self) -> PyResult<PyEngine> {
         let yaml = self.to_yaml()?;
         PyEngine::from_yaml(yaml)
     }
 }
+
+impl Graph {
+    fn add_node(&mut self, node_id: String, yaml_data: serde_yaml::Value) -> PyResult<()> {
+        if !self.node_ids.contains(&node_id) {
+            self.nodes.push(yaml_data);
+            self.node_ids.push(node_id);
+        }
+        Ok(())
+    }
+    
+    pub fn set_trigger(&mut self, node_id: String) -> PyResult<()> {
+        self.trigger = Some(node_id);
+        Ok(())
+    }
+    
+    pub fn add_output(&mut self, node_id: String) -> PyResult<()> {
+        if !self.outputs.contains(&node_id) {
+            self.outputs.push(node_id);
+        }
+        Ok(())
+    }
+}
+
+/// Base trait for all nodes
+trait PyNode {
+    fn node_id(&self) -> &str;
+    fn graph(&self) -> &Py<Graph>;
+}
+
+/// Special case: Input node (leaf node that references external data)
+#[pyclass]
+#[derive(Clone)]
+pub struct Input {
+    node_id: String,
+    #[pyo3(get)]
+    graph: Py<Graph>,
+}
+
+#[pymethods]
+impl Input {
+    #[new]
+    fn new(py: Python, graph: Py<Graph>, input_index: usize) -> PyResult<Self> {
+        let node_id = format!("input_{}", NODE_ID_COUNTER.fetch_add(1, Ordering::SeqCst));
+        
+        let yaml_data = serde_yaml::to_value(json!({
+            "id": &node_id,
+            "type": "Input",
+            "params": {
+                "input_index": input_index
+            }
+        })).unwrap();
+        
+        graph.borrow_mut(py).add_node(node_id.clone(), yaml_data)?;
+        
+        Ok(Self {
+            node_id,
+            graph: graph.clone(),
+        })
+    }
+    
+    #[getter]
+    fn node_id(&self) -> &str {
+        &self.node_id
+    }
+    
+    fn output(&self, py: Python) -> PyResult<Self> {
+        self.graph.borrow_mut(py).add_output(self.node_id.clone())?;
+        Ok(self.clone())
+    }
+    
+    fn trigger(&self, py: Python) -> PyResult<Self> {
+        self.graph.borrow_mut(py).set_trigger(self.node_id.clone())?;
+        Ok(self.clone())
+    }
+}
+
+/// Special case: Constant node (leaf node with a fixed value)
+#[pyclass]
+#[derive(Clone)]
+pub struct Constant {
+    node_id: String,
+    #[pyo3(get)]
+    graph: Py<Graph>,
+}
+
+#[pymethods]
+impl Constant {
+    #[new]
+    fn new(py: Python, graph: Py<Graph>, value: f64) -> PyResult<Self> {
+        let node_id = format!("constant_{}", NODE_ID_COUNTER.fetch_add(1, Ordering::SeqCst));
+        
+        let yaml_data = serde_yaml::to_value(json!({
+            "id": &node_id,
+            "type": "Constant",
+            "params": {
+                "value": value
+            }
+        })).unwrap();
+        
+        graph.borrow_mut(py).add_node(node_id.clone(), yaml_data)?;
+        
+        Ok(Self {
+            node_id,
+            graph: graph.clone(),
+        })
+    }
+    
+    #[getter]
+    fn node_id(&self) -> &str {
+        &self.node_id
+    }
+    
+    fn output(&self, py: Python) -> PyResult<Self> {
+        self.graph.borrow_mut(py).add_output(self.node_id.clone())?;
+        Ok(self.clone())
+    }
+    
+    fn trigger(&self, py: Python) -> PyResult<Self> {
+        self.graph.borrow_mut(py).set_trigger(self.node_id.clone())?;
+        Ok(self.clone())
+    }
+}
+
+/// Generic macro for transform nodes (nodes that take other nodes as inputs)
+/// These all follow the same pattern: collect node inputs into "inputs" array
+/// and any additional parameters as kwargs
+macro_rules! transform_node {
+    ($name:ident) => {
+        #[pyclass]
+        #[derive(Clone)]
+        pub struct $name {
+            node_id: String,
+            #[pyo3(get)]
+            graph: Py<Graph>,
+        }
+        
+        impl PyNode for $name {
+            fn node_id(&self) -> &str {
+                &self.node_id
+            }
+            
+            fn graph(&self) -> &Py<Graph> {
+                &self.graph
+            }
+        }
+        
+        #[pymethods]
+        impl $name {
+            #[new]
+            #[pyo3(signature = (graph, *args, **kwargs))]
+            fn new(py: Python, graph: Py<Graph>, args: &PyTuple, kwargs: Option<&PyDict>) -> PyResult<Self> {
+                let node_id = format!("{}_{}", 
+                    stringify!($name).to_lowercase(), 
+                    NODE_ID_COUNTER.fetch_add(1, Ordering::SeqCst)
+                );
+                
+                let mut params = HashMap::new();
+                
+                // All positional args are node inputs
+                let mut inputs = Vec::new();
+                for arg in args.iter() {
+                    if let Ok(node_id) = arg.getattr("node_id") {
+                        inputs.push(node_id.extract::<String>()?);
+                    } else if let Ok(nodes) = arg.extract::<Vec<&PyAny>>() {
+                        // Handle list of nodes (for Sum etc)
+                        for node in nodes {
+                            if let Ok(node_id) = node.getattr("node_id") {
+                                inputs.push(node_id.extract::<String>()?);
+                            }
+                        }
+                    }
+                }
+                
+                if !inputs.is_empty() {
+                    params.insert("inputs".to_string(), json!(inputs));
+                }
+                
+                // All kwargs become additional parameters
+                if let Some(kwargs) = kwargs {
+                    for (key, value) in kwargs.iter() {
+                        let key_str: String = key.extract()?;
+                        if let Ok(val) = value.extract::<f64>() {
+                            params.insert(key_str, json!(val));
+                        } else if let Ok(val) = value.extract::<String>() {
+                            params.insert(key_str, json!(val));
+                        } else if let Ok(val) = value.extract::<i64>() {
+                            params.insert(key_str, json!(val));
+                        }
+                    }
+                }
+                
+                let yaml_data = serde_yaml::to_value(json!({
+                    "id": &node_id,
+                    "type": stringify!($name),
+                    "params": params
+                })).unwrap();
+                
+                graph.borrow_mut(py).add_node(node_id.clone(), yaml_data)?;
+                
+                Ok(Self {
+                    node_id,
+                    graph: graph.clone(),
+                })
+            }
+            
+            #[getter]
+            fn node_id(&self) -> &str {
+                &self.node_id
+            }
+            
+            fn output(&self, py: Python) -> PyResult<Self> {
+                self.graph.borrow_mut(py).add_output(self.node_id.clone())?;
+                Ok(self.clone())
+            }
+            
+            fn trigger(&self, py: Python) -> PyResult<Self> {
+                self.graph.borrow_mut(py).set_trigger(self.node_id.clone())?;
+                Ok(self.clone())
+            }
+        }
+    };
+}
+
+// Generate transform node classes - these are all generic!
+transform_node!(Add);
+transform_node!(Multiply);
+transform_node!(Sum);
+transform_node!(ConstantProduct);
+transform_node!(Comparison);
+transform_node!(Pow);
 
 /// Python wrapper for the streaming DAG engine
 #[pyclass]
@@ -304,7 +286,6 @@ struct PyEngine {
 
 #[pymethods]
 impl PyEngine {
-    /// Create a new engine from a YAML string
     #[staticmethod]
     fn from_yaml(yaml_str: String) -> PyResult<Self> {
         let engine = engine::from_yaml(&yaml_str)
@@ -312,7 +293,6 @@ impl PyEngine {
         Ok(PyEngine { engine })
     }
     
-    /// Load a DAG from a YAML file
     #[staticmethod]
     fn from_yaml_file(path: String) -> PyResult<Self> {
         let yaml_str = std::fs::read_to_string(&path)
@@ -320,20 +300,15 @@ impl PyEngine {
         Self::from_yaml(yaml_str)
     }
     
-    /// Create engine from a Graph object
     #[staticmethod]
     fn from_graph(graph: &Graph) -> PyResult<Self> {
-        let yaml = graph.to_yaml()?;
-        Self::from_yaml(yaml)
+        graph.build_engine()
     }
     
-    /// Evaluate one step with input values
-    /// Returns None if trigger didn't fire, or a list of output values if it did
     fn evaluate_step(&mut self, input_values: Vec<f64>) -> PyResult<Option<Vec<f64>>> {
         Ok(self.engine.evaluate_step(&input_values))
     }
     
-    /// Get the current value of a specific node
     fn get_value(&self, node_id: usize) -> PyResult<f64> {
         if node_id >= self.engine.get_all_values().len() {
             return Err(PyValueError::new_err(format!("Node {} does not exist", node_id)));
@@ -341,25 +316,20 @@ impl PyEngine {
         Ok(self.engine.get_value(node_id))
     }
     
-    /// Get all current node values
     fn get_all_values(&self) -> PyResult<Vec<f64>> {
         Ok(self.engine.get_all_values().to_vec())
     }
     
-    /// Process a stream of input rows and yield outputs when trigger fires
     fn stream(&mut self, py: Python, input_stream: &PyAny) -> PyResult<Vec<Vec<f64>>> {
         let mut outputs = Vec::new();
         
-        // Iterate through the input stream
         for row in input_stream.iter()? {
             let input_values: Vec<f64> = row?.extract()?;
             
-            // Process this row
             if let Some(output_values) = self.engine.evaluate_step(&input_values) {
                 outputs.push(output_values);
             }
             
-            // Allow other Python threads to run
             py.check_signals()?;
         }
         
@@ -369,14 +339,21 @@ impl PyEngine {
 
 #[pymodule]
 fn sdag(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_class::<Node>()?;
-    m.add_class::<InputNode>()?;
-    m.add_class::<ConstantNode>()?;
-    m.add_class::<AddNode>()?;
-    m.add_class::<MultiplyNode>()?;
-    m.add_class::<SumNode>()?;
-    m.add_class::<ComparisonNode>()?;
+    // Core classes
     m.add_class::<Graph>()?;
     m.add_class::<PyEngine>()?;
+    
+    // Special leaf nodes
+    m.add_class::<Input>()?;
+    m.add_class::<Constant>()?;
+    
+    // Transform nodes (all generic!)
+    m.add_class::<Add>()?;
+    m.add_class::<Multiply>()?;
+    m.add_class::<Sum>()?;
+    m.add_class::<ConstantProduct>()?;
+    m.add_class::<Comparison>()?;
+    m.add_class::<Pow>()?;
+    
     Ok(())
 }

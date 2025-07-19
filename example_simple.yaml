@@ -1,0 +1,25 @@
+nodes:
+  - type: Input
+    params:
+      input_index: 0
+  - type: Input
+    params:
+      input_index: 1
+  - type: Constant
+    params:
+      value: 100.0
+  - type: Add
+    params:
+      inputs: [0, 1]
+  - type: Comparison
+    params:
+      inputs: [3, 2]
+      op: GreaterThan
+  - type: Constant
+    params:
+      value: 1.5
+  - type: Multiply
+    params:
+      inputs: [3, 5]
+trigger: 4
+outputs: [3, 6]
