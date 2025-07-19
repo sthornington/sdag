@@ -1,0 +1,32 @@
+nodes:
+  - id: price_a
+    type: Input
+    params:
+      input_index: 0
+  - id: price_b
+    type: Input
+    params:
+      input_index: 1
+  - id: threshold
+    type: Constant
+    params:
+      value: 100.0
+  - id: sum_prices
+    type: Add
+    params:
+      inputs: ["price_a", "price_b"]
+  - id: price_check
+    type: Comparison
+    params:
+      inputs: ["sum_prices", "threshold"]
+      op: GreaterThan
+  - id: multiplier
+    type: Constant
+    params:
+      value: 1.5
+  - id: adjusted_sum
+    type: Multiply
+    params:
+      inputs: ["sum_prices", "multiplier"]
+trigger: price_check
+outputs: ["sum_prices", "adjusted_sum"]

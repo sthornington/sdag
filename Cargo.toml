@@ -18,3 +18,10 @@ pyo3 = { version = "0.20", features = ["extension-module", "abi3-py38"], optiona
 [features]
 default = []
 python = ["pyo3"]
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "engine_bench"
+harness = false

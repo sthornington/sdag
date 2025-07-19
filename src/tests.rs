@@ -1,206 +1,114 @@
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::collections::HashMap;
-    use crate::{DagBuilder, NodeRegistry, Value, DagYaml, yaml::{NodeYaml, ConnectionYaml}};
-
+    use crate::{Engine, NodeOp, ComparisonOp};
+    
     #[test]
-    fn test_constant_node() {
-        let registry = Arc::new(NodeRegistry::new());
-        let mut params = HashMap::new();
-        params.insert("value".to_string(), Value::Float(42.0));
+    fn test_simple_streaming_dag() {
+        // Create a simple DAG: (a + b) * 2
+        let nodes = vec![
+            NodeOp::Input { input_index: 0 }, // 0: a
+            NodeOp::Input { input_index: 1 }, // 1: b
+            NodeOp::Add { a: 0, b: 1 },       // 2: a + b
+            NodeOp::Constant(2.0),             // 3: constant 2
+            NodeOp::Multiply { a: 2, b: 3 },  // 4: (a + b) * 2
+        ];
         
-        let node = registry.create("Constant", params).unwrap();
-        let outputs = node.compute(HashMap::new()).unwrap();
+        let mut engine = Engine::new(nodes);
+        engine.set_trigger(2); // Trigger on sum change
+        engine.set_outputs(vec![4]); // Output the product
         
-        assert_eq!(outputs.get("value").unwrap().as_f64().unwrap(), 42.0);
+        // First row: a=1, b=2
+        let outputs = engine.evaluate_step(&[1.0, 2.0]);
+        assert!(outputs.is_some());
+        assert_eq!(outputs.unwrap(), vec![6.0]); // (1+2)*2 = 6
+        
+        // Second row: same values, no trigger
+        let outputs = engine.evaluate_step(&[1.0, 2.0]);
+        assert!(outputs.is_none());
+        
+        // Third row: a=2, b=3, trigger fires
+        let outputs = engine.evaluate_step(&[2.0, 3.0]);
+        assert!(outputs.is_some());
+        assert_eq!(outputs.unwrap(), vec![10.0]); // (2+3)*2 = 10
     }
-
+    
     #[test]
-    fn test_add_node() {
-        let registry = Arc::new(NodeRegistry::new());
-        let node = registry.create("Add", HashMap::new()).unwrap();
+    fn test_comparison_trigger() {
+        // Create DAG: trigger when a + b > 5
+        let nodes = vec![
+            NodeOp::Input { input_index: 0 }, // 0: a
+            NodeOp::Input { input_index: 1 }, // 1: b
+            NodeOp::Add { a: 0, b: 1 },       // 2: a + b
+            NodeOp::Constant(5.0),             // 3: threshold
+            NodeOp::Comparison { a: 2, b: 3, op: ComparisonOp::GreaterThan }, // 4: sum > 5
+        ];
         
-        let mut inputs = HashMap::new();
-        inputs.insert("a".to_string(), Value::Float(5.0));
-        inputs.insert("b".to_string(), Value::Float(3.0));
+        let mut engine = Engine::new(nodes);
+        engine.set_trigger(4); // Trigger on comparison
+        engine.set_outputs(vec![2]); // Output the sum
         
-        let outputs = node.compute(inputs).unwrap();
-        assert_eq!(outputs.get("result").unwrap().as_f64().unwrap(), 8.0);
+        // First row: 2 + 2 = 4, not > 5, but first run always triggers
+        let outputs = engine.evaluate_step(&[2.0, 2.0]);
+        assert!(outputs.is_some()); // First run always triggers
+        
+        // Second row: 3 + 2 = 5, not > 5, no trigger
+        let outputs = engine.evaluate_step(&[3.0, 2.0]);
+        assert!(outputs.is_none());
+        
+        // Third row: 3 + 3 = 6 > 5, trigger fires
+        let outputs = engine.evaluate_step(&[3.0, 3.0]);
+        assert!(outputs.is_some());
+        assert_eq!(outputs.unwrap(), vec![6.0]);
     }
-
+    
     #[test]
-    fn test_multiply_node() {
-        let registry = Arc::new(NodeRegistry::new());
-        let node = registry.create("Multiply", HashMap::new()).unwrap();
+    fn test_incremental_computation() {
+        // Create DAG with multiple paths
+        let nodes = vec![
+            NodeOp::Input { input_index: 0 }, // 0: a
+            NodeOp::Input { input_index: 1 }, // 1: b
+            NodeOp::Constant(10.0),            // 2: constant
+            NodeOp::Add { a: 0, b: 2 },       // 3: a + 10
+            NodeOp::Add { a: 1, b: 2 },       // 4: b + 10
+            NodeOp::Multiply { a: 3, b: 4 },  // 5: (a+10) * (b+10)
+        ];
         
-        let mut inputs = HashMap::new();
-        inputs.insert("a".to_string(), Value::Float(4.0));
-        inputs.insert("b".to_string(), Value::Float(7.0));
+        let mut engine = Engine::new(nodes);
         
-        let outputs = node.compute(inputs).unwrap();
-        assert_eq!(outputs.get("result").unwrap().as_f64().unwrap(), 28.0);
+        // First evaluation
+        engine.evaluate_step(&[1.0, 2.0]);
+        assert_eq!(engine.get_value(5), 11.0 * 12.0); // (1+10) * (2+10) = 132
+        
+        // Change only a, b path should not recompute
+        engine.evaluate_step(&[2.0, 2.0]);
+        assert_eq!(engine.get_value(3), 12.0); // a + 10 = 12
+        assert_eq!(engine.get_value(4), 12.0); // b + 10 = 12 (not recomputed)
+        assert_eq!(engine.get_value(5), 12.0 * 12.0); // 144
     }
-
+    
     #[test]
-    fn test_simple_dag() {
-        let registry = Arc::new(NodeRegistry::new());
-        let mut builder = DagBuilder::new(registry.clone());
-        
-        // Create constants
-        let mut params1 = HashMap::new();
-        params1.insert("value".to_string(), Value::Float(10.0));
-        builder.add_node("const1".to_string(), "Constant", params1).unwrap();
-        
-        let mut params2 = HashMap::new();
-        params2.insert("value".to_string(), Value::Float(20.0));
-        builder.add_node("const2".to_string(), "Constant", params2).unwrap();
-        
-        // Add node
-        builder.add_node("add".to_string(), "Add", HashMap::new()).unwrap();
-        
-        // Connect
-        builder.connect("const1", "value", "add", "a").unwrap();
-        builder.connect("const2", "value", "add", "b").unwrap();
-        
-        let dag = builder.build().unwrap();
-        let result = dag.get_node_output("add", "result").unwrap();
-        
-        assert_eq!(result.as_f64().unwrap(), 30.0);
-    }
-
-    #[test]
-    fn test_complex_dag() {
-        let registry = Arc::new(NodeRegistry::new());
-        let mut builder = DagBuilder::new(registry.clone());
-        
-        // Create constants
-        let mut params1 = HashMap::new();
-        params1.insert("value".to_string(), Value::Float(2.0));
-        builder.add_node("x".to_string(), "Constant", params1).unwrap();
-        
-        let mut params2 = HashMap::new();
-        params2.insert("value".to_string(), Value::Float(3.0));
-        builder.add_node("y".to_string(), "Constant", params2).unwrap();
-        
-        let mut params3 = HashMap::new();
-        params3.insert("value".to_string(), Value::Float(4.0));
-        builder.add_node("z".to_string(), "Constant", params3).unwrap();
-        
-        // Create operations: (x + y) * z
-        builder.add_node("add".to_string(), "Add", HashMap::new()).unwrap();
-        builder.add_node("multiply".to_string(), "Multiply", HashMap::new()).unwrap();
-        
-        // Connect
-        builder.connect("x", "value", "add", "a").unwrap();
-        builder.connect("y", "value", "add", "b").unwrap();
-        builder.connect("add", "result", "multiply", "a").unwrap();
-        builder.connect("z", "value", "multiply", "b").unwrap();
-        
-        let dag = builder.build().unwrap();
-        let result = dag.get_node_output("multiply", "result").unwrap();
-        
-        // (2 + 3) * 4 = 20
-        assert_eq!(result.as_f64().unwrap(), 20.0);
-    }
-
-    #[test]
-    fn test_yaml_serialization() {
-        let dag_yaml = DagYaml {
-            nodes: vec![
-                NodeYaml {
-                    id: "const1".to_string(),
-                    node_type: "Constant".to_string(),
-                    params: {
-                        let mut params = HashMap::new();
-                        params.insert("value".to_string(), Value::Float(5.0));
-                        params
-                    },
-                },
-                NodeYaml {
-                    id: "const2".to_string(),
-                    node_type: "Constant".to_string(),
-                    params: {
-                        let mut params = HashMap::new();
-                        params.insert("value".to_string(), Value::Float(10.0));
-                        params
-                    },
-                },
-                NodeYaml {
-                    id: "add".to_string(),
-                    node_type: "Add".to_string(),
-                    params: HashMap::new(),
-                },
-            ],
-            connections: vec![
-                ConnectionYaml {
-                    from_node: "const1".to_string(),
-                    from_output: "value".to_string(),
-                    to_node: "add".to_string(),
-                    to_input: "a".to_string(),
-                },
-                ConnectionYaml {
-                    from_node: "const2".to_string(),
-                    from_output: "value".to_string(),
-                    to_node: "add".to_string(),
-                    to_input: "b".to_string(),
-                },
-            ],
-        };
-
-        let yaml_str = dag_yaml.to_yaml().unwrap();
-        let parsed = DagYaml::from_yaml(&yaml_str).unwrap();
-        
-        assert_eq!(parsed.nodes.len(), 3);
-        assert_eq!(parsed.connections.len(), 2);
-    }
-
-    #[test]
-    fn test_yaml_to_dag() {
-        let yaml_str = r#"
+    fn test_yaml_loading() {
+        let yaml = r#"
 nodes:
-  - id: a
-    node_type: Constant
+  - id: x
+    type: Input
     params:
-      value: 7.0
-  - id: b
-    node_type: Constant
+      input_index: 0
+  - id: y
+    type: Input
     params:
-      value: 3.0
-  - id: mult
-    node_type: Multiply
-    params: {}
-connections:
-  - from_node: a
-    from_output: value
-    to_node: mult
-    to_input: a
-  - from_node: b
-    from_output: value
-    to_node: mult
-    to_input: b
+      input_index: 1
+  - id: sum
+    type: Add
+    params:
+      inputs: ["x", "y"]
+trigger: sum
+outputs: ["sum"]
 "#;
-
-        let registry = Arc::new(NodeRegistry::new());
-        let dag = crate::yaml::load_dag_from_yaml(yaml_str, registry).unwrap();
-        let result = dag.get_node_output("mult", "result").unwrap();
         
-        assert_eq!(result.as_f64().unwrap(), 21.0);
-    }
-
-    #[test]
-    fn test_circular_dependency_detection() {
-        let registry = Arc::new(NodeRegistry::new());
-        let mut builder = DagBuilder::new(registry.clone());
-        
-        builder.add_node("a".to_string(), "Add", HashMap::new()).unwrap();
-        builder.add_node("b".to_string(), "Add", HashMap::new()).unwrap();
-        
-        // Create circular dependency
-        builder.connect("a", "result", "b", "a").unwrap();
-        builder.connect("b", "result", "a", "a").unwrap();
-        
-        let result = builder.build();
-        assert!(result.is_err());
+        let mut engine = crate::engine::from_yaml(yaml).unwrap();
+        let outputs = engine.evaluate_step(&[5.0, 7.0]);
+        assert!(outputs.is_some());
+        assert_eq!(outputs.unwrap(), vec![12.0]);
     }
 }
